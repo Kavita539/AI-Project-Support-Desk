@@ -6,7 +6,7 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 - [x] 1. Repo scaffold: `apps/web`, `apps/api`, `supabase/`, CI workflow, `.env.example`, CLAUDE.md
 
 ## M1 Schema, auth, tenancy
-- [ ] 2. Migrations: orgs, profiles, documents, chunks (`vector(768)`), tickets, drafts, jobs, indexes
+- [x] 2. Migrations: orgs, profiles, documents, chunks (`vector(768)`), tickets, drafts, jobs, indexes
 - [ ] 3. RLS policies as backstop
 - [ ] 4. JWT verification, `profiles` lookup, `GET /api/v1/me`
 - [ ] 5. Tenancy tests (cross-org 404, wrong role 403, no token 401)
