@@ -26,6 +26,7 @@ def make_token(
     *,
     key: ec.EllipticCurvePrivateKey = _private_key,
     expires_in: int = 3600,
+    drop: tuple[str, ...] = (),
     **overrides: Any,
 ) -> str:
     claims: dict[str, Any] = {
@@ -35,6 +36,8 @@ def make_token(
         "exp": int(time.time()) + expires_in,
     }
     claims.update(overrides)
+    for name in drop:
+        claims.pop(name)
     return jwt.encode(claims, key, algorithm="ES256", headers={"kid": "test"})
 
 
@@ -60,6 +63,19 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeDb:
     fake = FakeDb()
     monkeypatch.setattr("app.auth.get_profile", lambda _conn, uid: fake.profiles.get(uid))
     return fake
+
+
+@pytest.fixture
+def raw_client(db: FakeDb, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """Like client, but get_conn is NOT faked, so the real (closed) pool behavior shows."""
+    monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
+    get_settings.cache_clear()
+    app.dependency_overrides[get_key_resolver] = lambda: lambda _token: _private_key.public_key()
+    try:
+        yield TestClient(app, raise_server_exceptions=False)
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
 
 
 @pytest.fixture

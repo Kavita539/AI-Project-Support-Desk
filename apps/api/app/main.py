@@ -12,8 +12,11 @@ from app.routes import me
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    if get_settings().database_url:
-        open_pool()
+    missing = get_settings().missing_required()
+    if missing:
+        # Better to refuse to boot than to serve broken auth.
+        raise RuntimeError(f"Missing required settings: {', '.join(missing)}")
+    open_pool()
     yield
     close_pool()
 
@@ -24,9 +27,9 @@ install_error_handlers(app)
 # The browser app runs on a different origin, so it must be allowed to call us.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=get_settings().cors_origin_list,
     allow_headers=["Authorization", "Content-Type"],
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
 )
 
 app.include_router(me.router, prefix="/api/v1")
