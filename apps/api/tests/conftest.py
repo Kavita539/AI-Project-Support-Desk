@@ -1,6 +1,7 @@
 import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, nullcontext
+from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -122,6 +123,43 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeDb:
     monkeypatch.setattr("app.db.queries.orgs.get_join_code", fake.get_join_code)
     monkeypatch.setattr("app.services.onboarding.insert_profile", fake.insert_profile)
     return fake
+
+
+@dataclass(frozen=True)
+class OrgFixture:
+    """One org with a profile for each role, plus its join code."""
+
+    org_id: UUID
+    join_code: str
+    admin: Profile
+    agent: Profile
+    customer: Profile
+
+    def profile(self, role: str) -> Profile:
+        return {"admin": self.admin, "agent": self.agent, "customer": self.customer}[role]
+
+
+@dataclass(frozen=True)
+class TwoOrgs:
+    a: OrgFixture
+    b: OrgFixture
+
+
+@pytest.fixture
+def two_orgs(db: FakeDb) -> TwoOrgs:
+    """Org A and org B, each with an admin, an agent and a customer, and distinct join codes."""
+
+    def build(name: str, code: str) -> OrgFixture:
+        org_id = db.add_org(name, code)
+        return OrgFixture(
+            org_id=org_id,
+            join_code=code,
+            admin=db.add_profile("admin", org_id),
+            agent=db.add_profile("agent", org_id),
+            customer=db.add_profile("customer", org_id),
+        )
+
+    return TwoOrgs(a=build("Org A", "AAAA2222"), b=build("Org B", "BBBB3333"))
 
 
 @pytest.fixture

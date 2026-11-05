@@ -225,9 +225,9 @@ Routes stay thin: they check auth and input, then call a service. Services own b
 
 ## 8. Testing and CI
 
-- **Backend:** pytest with the fake LLM. Required suites: tenancy (two seeded orgs, every endpoint, guessed IDs return 404), role matrix (403), ingestion idempotency and failure paths, citation filtering, ticket transitions, approval invariants (no customer path exposes unapproved `ai_text`), injection fixture, rate limit.
+- **Backend:** pytest with the fake LLM. `tests/endpoint_matrix.py` lists every `/api/v1` route (method, path, roles, cross-org behaviour); `tests/test_tenancy.py` fails if a registered route has no row, so each new endpoint must add one. `tests/integration/` runs the real SQL against Postgres when `TEST_DATABASE_URL` is set (otherwise skipped); it applies Supabase stubs plus all migrations to a throwaway local database. Required suites: tenancy (two seeded orgs, every endpoint, guessed IDs return 404), role matrix (403), ingestion idempotency and failure paths, citation filtering, ticket transitions, approval invariants (no customer path exposes unapproved `ai_text`), injection fixture, rate limit.
 - **Eval (manual, real Gemini):** `run_eval` over the 20 to 30 in-scope and the out-of-scope questions, reporting accuracy and "I don't know" rates against AC-15 and AC-18.
-- **CI:** ruff, pytest, `npm run build` (with type check) on every push. No network LLM calls.
+- **CI:** ruff, mypy, pytest (with a `pgvector/pgvector:pg16` service container so the integration tests run), web lint, vitest, build and Playwright on every push. No network LLM calls.
 
 ## 9. Milestone mapping (suggested order)
 
