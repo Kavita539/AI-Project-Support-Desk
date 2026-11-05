@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     database_url: str = ""
     supabase_url: str = ""
     supabase_service_role_key: str = ""
+    storage_bucket: str = "documents"
     gemini_api_key: str = ""
     llm_provider: str = "fake"
     # Comma-separated browser origins allowed to call the API (the deployed web app).

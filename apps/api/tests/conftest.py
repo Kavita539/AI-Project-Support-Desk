@@ -15,7 +15,9 @@ from app.auth import get_key_resolver
 from app.config import get_settings
 from app.db.pool import get_conn
 from app.db.queries.profiles import Profile
+from app.errors import ApiError
 from app.main import app
+from app.storage import get_storage
 
 SUPABASE_URL = "https://test.supabase.co"
 ISSUER = f"{SUPABASE_URL}/auth/v1"
@@ -56,6 +58,9 @@ class FakeConn:
 
     def transaction(self) -> AbstractContextManager[None]:
         return nullcontext()
+
+    def commit(self) -> None:
+        pass
 
 
 class FakeDb:
@@ -122,6 +127,31 @@ def db(monkeypatch: pytest.MonkeyPatch) -> FakeDb:
     )
     monkeypatch.setattr("app.db.queries.orgs.get_join_code", fake.get_join_code)
     monkeypatch.setattr("app.services.onboarding.insert_profile", fake.insert_profile)
+    return fake
+
+
+class FakeStorage:
+    """In-memory stand-in for Supabase Storage."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str]] = {}
+        self.fail_upload = False
+        self.deleted: list[str] = []
+
+    def upload(self, path: str, data: bytes, content_type: str) -> None:
+        if self.fail_upload:
+            raise ApiError(502, "storage_error", "File storage is unavailable, please try again.")
+        self.objects[path] = (data, content_type)
+
+    def delete(self, path: str) -> None:
+        self.deleted.append(path)
+        self.objects.pop(path, None)
+
+
+@pytest.fixture
+def storage(client: TestClient) -> FakeStorage:
+    fake = FakeStorage()
+    app.dependency_overrides[get_storage] = lambda: fake
     return fake
 
 

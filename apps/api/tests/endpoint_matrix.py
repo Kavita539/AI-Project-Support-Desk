@@ -31,12 +31,33 @@ class Route:
     path_params: dict[str, str] = field(default_factory=dict)
     cross_org_404: bool = False
     cross_org_path: str | None = None
+    # Extra keyword arguments for client.request (e.g. files= for multipart uploads).
+    request_kwargs: dict[str, Any] = field(default_factory=dict)
+    # False for routes a signed-in user without a profile row may call (onboarding).
+    needs_profile: bool = True
 
+
+# Fixed id of the org A document that the tenancy tests seed (see test_tenancy.py).
+DOC_A_ID = "11111111-1111-4111-8111-111111111111"
 
 ROUTES: list[Route] = [
     Route("GET", "/api/v1/health", public=True),
     Route("GET", "/api/v1/me"),
     # Any signed-in user may call it; a user who already has a profile gets 409 inside.
-    Route("POST", "/api/v1/onboarding", body={"org_name": "Matrix Org"}),
+    Route("POST", "/api/v1/onboarding", body={"org_name": "Matrix Org"}, needs_profile=False),
     Route("GET", "/api/v1/org/join-code", roles=("admin",)),
+    Route(
+        "POST",
+        "/api/v1/documents",
+        roles=("admin",),
+        request_kwargs={"files": {"file": ("matrix.txt", b"hello", "text/plain")}},
+    ),
+    Route(
+        "GET",
+        "/api/v1/documents/{document_id}",
+        roles=("admin",),
+        path_params={"document_id": DOC_A_ID},
+        cross_org_404=True,
+        cross_org_path=f"/api/v1/documents/{DOC_A_ID}",
+    ),
 ]

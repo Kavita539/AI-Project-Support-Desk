@@ -108,7 +108,7 @@ Notes:
 
 Base path `/api/v1`. JSON throughout. All endpoints except `/health` need a valid bearer token (401 otherwise). Role checks are dependencies: `require_role('admin')`, `require_role('admin','agent')`, or any authenticated user.
 
-Errors use `{ "error": { "code": "...", "message": "..." } }`. The status codes used are 400, 401, 403, 404, 409 (invalid transition, or `already_onboarded`), 413 and 415 (upload limits and types), 422 (invalid request body), 429, 500 (`internal_error`, unexpected), 502 (LLM provider failure, retryable), and 503 (`db_unavailable` or `auth_unavailable`, retryable).
+Errors use `{ "error": { "code": "...", "message": "..." } }`. The status codes used are 400, 401, 403, 404, 409 (invalid transition, or `already_onboarded`), 411, 413 and 415 (upload limits and types), 422 (invalid request body), 429, 500 (`internal_error`, unexpected), 502 (LLM or Storage provider failure, retryable), and 503 (`db_unavailable` or `auth_unavailable`, retryable).
 
 Token verification: the API checks the bearer token against Supabase's public keys (the project's JWKS endpoint, cached), accepting only ES256 and RS256. It requires `exp` and `sub`, `aud` = `authenticated` and `iss` = `<SUPABASE_URL>/auth/v1`, allows 60 seconds of clock skew, and does not check `iat`. No JWT secret is stored. Authentication runs before a database connection is borrowed, and write requests commit before the response is sent.
 
@@ -127,12 +127,17 @@ Token verification: the API checks the bearer token against Supabase's public ke
 |---|---|---|---|
 | GET | `/documents` | admin | List with status and error |
 | POST | `/documents` | admin | Multipart upload (`.pdf/.md/.txt`, 10 MB, 100 pages); stores the file, inserts a `queued` row and an `ingest_document` job |
+| GET | `/documents/{id}` | admin | One document with status and error; another org's id returns 404 |
 | POST | `/documents/faq` | admin | `{question, answer}` creates a `faq` document and job |
 | GET | `/documents/{id}/source` | any | Signed URL (or the FAQ text) for citation links; same-org only |
 | POST | `/documents/{id}/reprocess` | admin | Re-enqueue ingestion (idempotent) |
 | DELETE | `/documents/{id}` | admin | Remove file, chunks and embeddings |
 
 The page-count limit (AC-7) is checked in the upload handler for PDFs, before the job is queued.
+
+Upload checks (step 6), in order. A middleware first refuses `POST /documents` bodies over about 11 MB, or with no `Content-Length`, before the multipart body is parsed (FastAPI parses it before it checks the token). Then, in the service: extension allowlist, then the file is read in chunks up to 10 MB. The client's content type is ignored. Content must match the extension (`%PDF-` for PDFs; valid UTF-8 without NUL bytes for `.md` and `.txt`). Errors: 411 `length_required`, 413 `file_too_large` and `too_many_pages`, 415 `unsupported_type` and `content_mismatch`, 400 `empty_file` and `invalid_pdf`, 502 `storage_error`. The file goes to Storage first, then the document row and the job are inserted and committed together; if that fails, the stored file is deleted (best effort). The bucket name is the `STORAGE_BUCKET` setting (default `documents`); the bucket is created by migration `20261105000003_documents_bucket` (private, no `storage.objects` policies, so only the API's service role can use it).
+
+Job queue (`app/db/jobs.py`): `claim_next` and `requeue_stale` are deliberately not scoped by `org_id` (the worker does not know which org has work). The claimed job carries its `org_id`, and everything the worker does afterwards must use it. All other job and document queries take `org_id`.
 
 ### Ask
 | Method | Path | Role | Purpose |

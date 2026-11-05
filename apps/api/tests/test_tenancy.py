@@ -2,6 +2,7 @@
 
 import uuid
 from typing import Any
+from uuid import UUID
 
 import httpx
 import pytest
@@ -10,8 +11,9 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
-from .conftest import FakeDb, TwoOrgs, make_forged_token, make_token
-from .endpoint_matrix import ROUTES, Route
+from .conftest import FakeDb, FakeStorage, OrgFixture, TwoOrgs, make_forged_token, make_token
+from .endpoint_matrix import DOC_A_ID, ROUTES, Route
+from .test_documents_upload import FakeDocs
 
 PREFIX = "/api/v1"
 ALL_ROLES = ("admin", "agent", "customer")
@@ -36,8 +38,27 @@ def _bearer(token: str) -> dict[str, str]:
 def _call(client: TestClient, route: Route, token: str | None) -> httpx.Response:
     path = route.path.format(**route.path_params)
     headers = _bearer(token) if token is not None else {}
-    resp: httpx.Response = client.request(route.method, path, headers=headers, json=route.body)
+    resp: httpx.Response = client.request(
+        route.method, path, headers=headers, json=route.body, **route.request_kwargs
+    )
     return resp
+
+
+@pytest.fixture(autouse=True)
+def matrix_fakes(
+    storage: FakeStorage, two_orgs: TwoOrgs, monkeypatch: pytest.MonkeyPatch
+) -> FakeDocs:
+    """Fake storage and document queries, with one org A document (DOC_A_ID) seeded.
+    The fake lookup is keyed by org_id, so org B gets None for it."""
+    docs = FakeDocs()
+    monkeypatch.setattr("app.db.queries.documents.insert_document", docs.insert_document)
+    monkeypatch.setattr("app.db.queries.documents.get_document", docs.get_document)
+    monkeypatch.setattr("app.db.jobs.enqueue", docs.enqueue)
+    docs.insert_document(
+        None, two_orgs.a.org_id, UUID(DOC_A_ID), "seed.txt", "txt",
+        f"{two_orgs.a.org_id}/{DOC_A_ID}/seed.txt", 5, None, two_orgs.a.admin.user_id,
+    )  # fmt: skip
+    return docs
 
 
 def _assert_error_shape(resp: httpx.Response) -> None:
@@ -118,12 +139,32 @@ def test_allowed_role_is_not_denied(
 def test_cross_org_id_is_404(client: TestClient, two_orgs: TwoOrgs, route: Route) -> None:
     assert route.cross_org_path, "cross_org_404 rows need cross_org_path"
     role = (route.roles or ALL_ROLES)[0]
-    token = make_token(two_orgs.b.profile(role).user_id)
-    resp = client.request(
-        route.method, route.cross_org_path, headers=_bearer(token), json=route.body
-    )
+
+    def request_as(org: OrgFixture) -> httpx.Response:
+        assert route.cross_org_path
+        token = make_token(org.profile(role).user_id)
+        resp: httpx.Response = client.request(
+            route.method,
+            route.cross_org_path,
+            headers=_bearer(token),
+            json=route.body,
+            **route.request_kwargs,
+        )
+        return resp
+
+    # Positive control: the owner can reach it, so a bad path or an always-404 handler fails.
+    assert request_as(two_orgs.a).status_code < 300
+    resp = request_as(two_orgs.b)
     assert resp.status_code == 404
     _assert_error_shape(resp)
+
+
+@pytest.mark.parametrize("route", [r for r in AUTHED if r.needs_profile], ids=_id)
+def test_valid_token_without_profile_is_403_no_profile(client: TestClient, route: Route) -> None:
+    resp = _call(client, route, make_token(uuid.uuid4()))
+    assert resp.status_code == 403
+    _assert_error_shape(resp)
+    assert resp.json()["error"]["code"] == "no_profile"
 
 
 def test_each_admin_gets_only_their_own_join_code(client: TestClient, two_orgs: TwoOrgs) -> None:

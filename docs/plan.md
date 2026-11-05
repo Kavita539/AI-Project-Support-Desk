@@ -13,7 +13,7 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 - [x] 5. Tenancy tests: two-org fixture, endpoint matrix with a completeness test (a new route without a row fails), 401/403 and `org_id`-from-client checks, real-Postgres integration tests in CI. The cross-org 404 test is wired but runs zero cases until the first ID-based route (step 6) adds a matrix row with `cross_org_404=True`
 
 ## M2 Documents and ingestion
-- [ ] 6. Upload endpoint with type and size checks, `jobs` table, claim with `SKIP LOCKED`
+- [x] 6. Upload endpoint (`POST /documents`, `GET /documents/{id}`) with type, size and page checks, Storage client, `jobs` module with claim via `SKIP LOCKED`; the `jobs` table itself came with the step 3 schema. First ID-based route, so the cross-org 404 test now runs
 - [ ] 7. Ingestion worker: parse, chunk, embed, idempotent re-ingest
 - [ ] 8. Document list/delete and FAQ entry endpoints
 
