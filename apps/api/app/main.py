@@ -30,7 +30,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         try:
             worker = build_worker()
         except Exception:
-            # A bad provider setting must not take auth, upload and health down with it.
+            # LLM settings are validated by missing_required() above, so this guard only
+            # covers unexpected worker-construction errors (auth, upload and health stay up).
             logger.exception("Ingestion worker disabled: could not build it")
     if worker is not None:
         worker.start()

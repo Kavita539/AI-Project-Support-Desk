@@ -3,6 +3,7 @@ from pydantic import BaseModel, ConfigDict
 
 from app.llm.base import (
     LLMAuthError,
+    LLMBadRequest,
     LLMBlocked,
     LLMError,
     LLMMalformedOutput,
@@ -81,6 +82,7 @@ def test_provider_malformed_twice_reraises_second() -> None:
         LLMRateLimited("slow down", retryable=True, retry_after=3.0),
         LLMUnavailable("down", retryable=True),
         LLMAuthError("auth", retryable=False),
+        LLMBadRequest("bad request", retryable=False),
     ],
 )
 def test_other_errors_propagate_without_retry(error: LLMError) -> None:

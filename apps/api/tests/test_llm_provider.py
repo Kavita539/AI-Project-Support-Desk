@@ -1,8 +1,11 @@
 import logging
+from typing import Any
 
 import pytest
 
+import app.config as config
 import app.llm as llm
+import app.llm.gemini as gemini_module
 from app.config import Settings, get_settings
 from app.llm import FakeProvider, GeminiProvider, clear_provider_cache, get_provider
 
@@ -60,6 +63,11 @@ def test_gemini_blank_key_raises_without_key_text(monkeypatch: pytest.MonkeyPatc
         assert "KEY123" not in str(exc.value)
 
 
+def test_get_provider_normalises_provider_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    configure(monkeypatch, "Gemini ", "KEY123")
+    assert isinstance(get_provider(), GeminiProvider)
+
+
 @pytest.mark.parametrize("name", ["openai", ""])
 def test_unknown_or_empty_provider_raises(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     configure(monkeypatch, name)
@@ -70,13 +78,14 @@ def test_unknown_or_empty_provider_raises(monkeypatch: pytest.MonkeyPatch, name:
 # --- Settings.missing_required ---
 
 
-def settings(*, llm_provider: str, gemini_api_key: str = "") -> Settings:
+def settings(*, llm_provider: str, gemini_api_key: str = "", **extra: Any) -> Settings:
     return Settings(
         _env_file=None,  # type: ignore[call-arg]
         database_url="postgresql://x",
         supabase_url="https://p.supabase.co",
         llm_provider=llm_provider,
         gemini_api_key=gemini_api_key,
+        **extra,
     )
 
 
@@ -110,3 +119,55 @@ def test_llm_defaults() -> None:
     assert s.gemini_generation_model == "gemini-3.5-flash-lite"
     assert s.gemini_base_url == "https://generativelanguage.googleapis.com/v1beta"
     assert s.llm_timeout_seconds == 30.0
+
+
+@pytest.mark.parametrize("name", ["Gemini ", " GEMINI"])
+def test_provider_name_is_normalised(name: str) -> None:
+    s = settings(llm_provider=name, gemini_api_key="KEY123")
+    assert s.llm_provider == "gemini"
+    assert s.missing_required() == []
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        ({"embed_batch_size": 101}, "EMBED_BATCH_SIZE (must be 1-100)"),
+        ({"embed_batch_size": 0}, "EMBED_BATCH_SIZE (must be 1-100)"),
+        ({"chunk_max_chars": 8001}, "CHUNK_MAX_CHARS (must be at most 8000)"),
+        ({"gemini_base_url": "http://x"}, "GEMINI_BASE_URL (must start with https://)"),
+        ({"gemini_embed_model": "a/b"}, "GEMINI_EMBED_MODEL"),
+        ({"gemini_embed_model": "a?x"}, "GEMINI_EMBED_MODEL"),
+        ({"gemini_generation_model": "a/b"}, "GEMINI_GENERATION_MODEL"),
+        ({"gemini_generation_model": "a?x"}, "GEMINI_GENERATION_MODEL"),
+    ],
+)
+def test_gemini_setting_limits_reported_only_for_gemini(
+    override: dict[str, Any], expected: str
+) -> None:
+    gem = settings(llm_provider="gemini", gemini_api_key="KEY123", **override)
+    assert gem.missing_required() == [expected]
+    assert settings(llm_provider="fake", **override).missing_required() == []
+
+
+def test_gemini_setting_names_come_after_key_check_in_order() -> None:
+    s = settings(
+        llm_provider="gemini",
+        embed_batch_size=0,
+        chunk_max_chars=9000,
+        gemini_base_url="http://x",
+        gemini_embed_model="a/b",
+        gemini_generation_model="a?x",
+    )
+    assert s.missing_required() == [
+        "GEMINI_API_KEY",
+        "EMBED_BATCH_SIZE (must be 1-100)",
+        "CHUNK_MAX_CHARS (must be at most 8000)",
+        "GEMINI_BASE_URL (must start with https://)",
+        "GEMINI_EMBED_MODEL",
+        "GEMINI_GENERATION_MODEL",
+    ]
+
+
+def test_config_limits_match_gemini_module() -> None:
+    assert config.MAX_EMBED_BATCH == gemini_module.MAX_EMBED_BATCH
+    assert config.MAX_EMBED_CHARS == gemini_module.MAX_EMBED_CHARS

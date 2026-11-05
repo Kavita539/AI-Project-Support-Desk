@@ -430,10 +430,27 @@ def test_empty_api_key_rejected_without_echo() -> None:
 
 
 def test_default_client_sends_key_header_and_timeouts() -> None:
-    provider = GeminiProvider(KEY)
-    assert provider._client.headers["x-goog-api-key"] == KEY
-    assert provider._client.headers["content-type"] == "application/json"
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return gen_ok(request)
+
+    provider = GeminiProvider(KEY, timeout_seconds=7.0)
+    assert "x-goog-api-key" not in provider._client.headers
+    assert KEY not in repr(dict(provider._client.headers))
+    # Swap only the transport; the default client's own configuration stays under test.
+    provider._client._transport = httpx.MockTransport(handler)
+    provider.generate("p", SCHEMA)
     provider._client.close()
+    assert seen[0].headers["x-goog-api-key"] == KEY
+    assert seen[0].headers["content-type"] == "application/json"
+    assert seen[0].extensions["timeout"] == {
+        "connect": 5.0,
+        "read": 14.0,
+        "write": 10.0,
+        "pool": 5.0,
+    }
 
 
 def test_per_request_timeouts() -> None:

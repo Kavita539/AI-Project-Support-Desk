@@ -225,3 +225,25 @@ def test_bad_provider_does_not_stop_the_api_booting(monkeypatch: pytest.MonkeyPa
     with TestClient(app) as c:
         assert c.get("/api/v1/health").status_code == 200
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("provider", "needle"),
+    [("", "LLM_PROVIDER"), ("gemini", "GEMINI_API_KEY")],
+)
+def test_lifespan_refuses_to_boot_on_bad_llm_settings(
+    monkeypatch: pytest.MonkeyPatch, provider: str, needle: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://unused")
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.main.open_pool", lambda: None)
+    monkeypatch.setattr("app.main.close_pool", lambda: None)
+    try:
+        with pytest.raises(RuntimeError, match=needle), TestClient(app):
+            pass
+    finally:
+        monkeypatch.undo()
+        get_settings.cache_clear()

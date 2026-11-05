@@ -65,9 +65,8 @@ class GeminiProvider:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         if client is None:
-            client = httpx.Client(
-                headers={_API_KEY_HEADER: api_key, "content-type": "application/json"}
-            )
+            # The key is sent per request in _post, never stored on the client.
+            client = httpx.Client()
         self._client = client
 
     def __repr__(self) -> str:

@@ -1,8 +1,18 @@
+import re
 from functools import lru_cache
+from typing import Any
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_LLM_PROVIDERS = frozenset({"fake", "gemini"})
+
+# Duplicated from app/llm/gemini.py (MAX_EMBED_BATCH, MAX_EMBED_CHARS): importing app.llm
+# here would be a cycle because app.llm imports this module. A test asserts they are equal.
+MAX_EMBED_BATCH = 100
+MAX_EMBED_CHARS = 8000
+
+_MODEL_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
 class Settings(BaseSettings):
@@ -33,6 +43,11 @@ class Settings(BaseSettings):
     chunk_overlap_chars: int = 400
     parse_deadline_seconds: float = 60.0
 
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def _normalise_llm_provider(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
+
     @property
     def jwt_issuer(self) -> str:
         return f"{self.supabase_url.rstrip('/')}/auth/v1"
@@ -59,6 +74,17 @@ class Settings(BaseSettings):
             missing.append("LLM_PROVIDER")
         elif self.llm_provider == "gemini" and not self.gemini_api_key.strip():
             missing.append("GEMINI_API_KEY")
+        if self.llm_provider == "gemini":
+            if not 1 <= self.embed_batch_size <= MAX_EMBED_BATCH:
+                missing.append(f"EMBED_BATCH_SIZE (must be 1-{MAX_EMBED_BATCH})")
+            if self.chunk_max_chars > MAX_EMBED_CHARS:
+                missing.append(f"CHUNK_MAX_CHARS (must be at most {MAX_EMBED_CHARS})")
+            if not self.gemini_base_url.startswith("https://"):
+                missing.append("GEMINI_BASE_URL (must start with https://)")
+            if not _MODEL_NAME.fullmatch(self.gemini_embed_model):
+                missing.append("GEMINI_EMBED_MODEL")
+            if not _MODEL_NAME.fullmatch(self.gemini_generation_model):
+                missing.append("GEMINI_GENERATION_MODEL")
         return missing
 
 

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 
 from app.config import Settings
@@ -28,6 +29,7 @@ from app.llm.base import (
     LLMRateLimited,
     LLMUnavailable,
 )
+from app.llm.gemini import GeminiProvider
 from app.services import ingestion
 from app.services.chunking import TextChunk
 from app.services.chunking import chunk_pages as real_chunk_pages
@@ -507,7 +509,7 @@ def test_classify_llm_error_family() -> None:
     [
         (90.0, 90),
         (89.2, 90),
-        (10000.0, ingestion.MAX_RETRY_AFTER_SECONDS),
+        (10000.0, 300),
         (5.0, 30),
         (None, 30),
         (-10.0, 30),
@@ -526,6 +528,10 @@ def test_retry_after_sets_requeue_delay(env: Env, retry_after: float | None, exp
     assert stored is not None and stored.status == "queued"
     assert env.world.job_retryable[job.id] is True
     assert env.world.job_delay[job.id] == expected
+
+
+def test_retry_after_cap_is_pinned() -> None:
+    assert ingestion.MAX_RETRY_AFTER_SECONDS == 300
 
 
 def test_retry_after_never_shortens_later_backoff(env: Env) -> None:
@@ -561,6 +567,39 @@ def test_llm_unavailable_on_final_attempt_fails_document(env: Env) -> None:
     assert "secret-detail" not in (stored.error or "")
     assert env.world.job_status[job.id] == "failed"
     assert env.world.job_retryable[job.id] is False
+
+
+@pytest.mark.parametrize(("status", "retryable"), [(401, False), (503, True)])
+def test_real_gemini_provider_errors_never_leak_key_or_body(
+    env: Env, status: int, retryable: bool
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text="SECRET-BODY key=KEY123")
+
+    env.provider = GeminiProvider(  # type: ignore[assignment]
+        "KEY123", client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    doc = upload(env, b"text")
+    job = env.world.add_job(doc.id, attempts=1)
+    env.run(job)
+    stored = env.world.doc(doc)
+    assert stored is not None
+    last_errors = [env.world.job_error[job.id] or ""]
+    if retryable:
+        assert stored.status == "queued"
+        assert env.world.job_retryable[job.id] is True
+        # The final attempt turns the same error into a visible failure.
+        job2 = env.world.add_job(doc.id, attempts=3, max_attempts=3)
+        env.run(job2)
+        stored = env.world.doc(doc)
+        assert stored is not None
+        last_errors.append(env.world.job_error[job2.id] or "")
+    assert stored.status == "failed"
+    assert stored.error == ingestion.MSG_PROVIDER
+    assert all(e.startswith("LLM") for e in last_errors)
+    for banned in ("KEY123", "SECRET-BODY"):
+        assert banned not in (stored.error or "")
+        assert not any(banned in e for e in last_errors)
 
 
 # ---- payload, tenancy, fencing --------------------------------------------------------------
