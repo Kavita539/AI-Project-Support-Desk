@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.config import get_settings
 from app.db.pool import close_pool, open_pool
 from app.errors import install_error_handlers
-from app.routes import documents, me, onboarding, org
+from app.routes import ask, documents, me, onboarding, org
 from app.services.documents import MAX_BYTES
 from app.worker import build_worker
 
@@ -52,6 +52,8 @@ UPLOAD_PATH = "/api/v1/documents"
 MAX_UPLOAD_BODY = MAX_BYTES + 1024 * 1024  # file limit plus multipart overhead
 FAQ_PATH = "/api/v1/documents/faq"
 MAX_FAQ_BODY = 36 * 1024  # 2700 chars; JSON-escaped astral characters take 12 bytes each
+ASK_PATH = "/api/v1/ask"
+MAX_ASK_BODY = 16 * 1024  # 1000 chars; JSON-escaped astral characters take 12 bytes each
 
 
 @app.middleware("http")
@@ -73,6 +75,12 @@ async def limit_upload_body(
             return _error(411, "length_required", "Content-Length is required.")
         if int(raw) > MAX_FAQ_BODY:
             return _error(413, "body_too_large", "The request is too large.")
+    elif request.method == "POST" and request.url.path == ASK_PATH:
+        raw = request.headers.get("content-length")
+        if raw is None or not raw.isdigit():
+            return _error(411, "length_required", "Content-Length is required.")
+        if int(raw) > MAX_ASK_BODY:
+            return _error(413, "body_too_large", "The request is too large.")
     return await call_next(request)
 
 
@@ -92,6 +100,7 @@ app.include_router(me.router, prefix="/api/v1")
 app.include_router(onboarding.router, prefix="/api/v1")
 app.include_router(org.router, prefix="/api/v1")
 app.include_router(documents.router, prefix="/api/v1")
+app.include_router(ask.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")
