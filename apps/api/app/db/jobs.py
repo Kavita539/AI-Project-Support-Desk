@@ -63,6 +63,19 @@ def enqueue(
     return _to_job(row)
 
 
+def delete_queued_ingest_jobs(
+    conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID
+) -> int:
+    """Delete this document's still-queued ingest jobs and return how many. Running, done
+    and failed jobs are left alone. The caller owns the transaction."""
+    cur = conn.execute(
+        "delete from jobs where org_id = %s and type = 'ingest_document' "
+        "and status = 'queued' and payload->>'document_id' = %s",
+        (org_id, str(doc_id)),
+    )
+    return cur.rowcount
+
+
 def claim_next(conn: Connection[dict[str, object]]) -> Job | None:
     """Claim the oldest runnable job in one statement.
 
