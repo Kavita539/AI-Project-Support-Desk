@@ -27,7 +27,7 @@ Supporting choices:
 - **Raw SQL over an ORM.** Queries are few and the vector search and `FOR UPDATE SKIP LOCKED` are SQL-native. Every query takes `org_id` explicitly, which keeps AC-5 easy to audit.
 - **TanStack Query** gives polling for document status (AC-10) and loading states (AC-22) with little code.
 - **PDF parsing:** `pypdf` (text only). A PDF with no extractable text fails with a reason (AC-9).
-- **Embedding dimension:** 768, set through Gemini's output-dimensionality option. Stored as `vector(768)`. Confirm in M3 (PRD open item).
+- **Embedding dimension:** 768, requested through Gemini's output-dimensionality option and L2-normalised by the provider. Stored as `vector(768)`. Written from memory of the Gemini docs and not yet checked against the live API (see section 5, LLM provider).
 
 ## 2. Key design decisions
 
@@ -37,7 +37,7 @@ Supporting choices:
 4. **"I don't know" gate runs before the LLM.** If the top chunk's similarity is below the threshold, skip generation and return the fallback. The threshold is tuned on the eval set (M3).
 5. **Drafts are append-only and gated.** `ai_text` is written once and never updated. `final_text`, `approved_by` and `approved_at` are set only by the approve endpoint. Customer-facing serializers read from `drafts` only where `approved_at IS NOT NULL`, and have no field for `ai_text` (AC-33, AC-37).
 6. **Jobs table, idempotent.** The worker claims jobs with `FOR UPDATE SKIP LOCKED`. Ingestion deletes the document's chunks, then inserts new ones in one transaction (AC-11). The pipeline job upserts a single active draft per ticket (AC-32). Stale `running` jobs are re-queued after a timeout, which covers host sleep or restart.
-7. **Provider interface.** `embed(texts) -> list[vector]` and `generate(prompt, schema) -> dict`. A fake implementation is used in CI (AC-42).
+7. **Provider interface.** `embed(texts, kind) -> list[vector]` and `generate(prompt, schema) -> dict`, with a typed `LLMError` family. A fake implementation is used in CI (AC-42). Details in section 5 (LLM provider).
 8. **Auth on the web.** `supabase-js` handles sign-up, login and session. The web sends `Authorization: Bearer <access_token>` to the API. The web holds only the anon key. The service key and the LLM key exist only on the API (AC-39).
 
 ## 3. Data model
@@ -183,20 +183,42 @@ An edit before approval is held in the draft row as the working text and becomes
 **Ingestion (`ingest_document`, step 7)**: `app/worker.py` runs one daemon thread inside the API process (started and stopped in the FastAPI lifespan; `WORKER_ENABLED=false` turns it off, and tests do). It polls `claim_next` every `WORKER_POLL_SECONDS` (2 s) and sweeps stale jobs every 60 s (`requeue_stale` after `WORKER_STALE_SECONDS`, 600 s). `services/ingestion.py` runs each job in three phases:
 
 1. **Begin** (one short transaction): load the document with the claimed job's `org_id` (never the payload's), take the job row lock with `lock_running`, set the document `processing`, commit.
-2. **Slow work, no database connection held:** download from Storage, `parse_document` (pypdf per page, or md/txt; 60 s cooperative deadline checked between pages, 2M character cap), `chunk_pages` (2800 characters, about 700 tokens, with 400 characters of overlap; `page` and `section` kept), `embed_in_batches` (50 per call, each vector checked to be 768 floats). Ingestion makes embedding calls only, never generation (rule 9). `LLM_PROVIDER=fake` is the only provider until step 9; any other value disables the worker at boot with a logged error.
+2. **Slow work, no database connection held:** download from Storage, `parse_document` (pypdf per page, or md/txt; 60 s cooperative deadline checked between pages, 2M character cap), `chunk_pages` (2800 characters, about 700 tokens, with 400 characters of overlap; `page` and `section` kept), `embed_in_batches` (50 per call, each vector checked to be 768 floats). Ingestion makes embedding calls only, never generation (rule 9), through the narrow `Embedder` protocol. The provider comes from `LLM_PROVIDER` (`fake` or `gemini`, see LLM provider below); a bad LLM setting stops the API at boot.
 3. **Finalize** (one transaction): `lock_running` again, `mark_ready`, `replace_chunks` (delete this document's chunks, insert the new ones), `jobs.complete`, one commit (AC-11). If the document was deleted meanwhile, the job is completed on the same connection and nothing else is written.
 
 **Fencing:** `jobs.attempts` is the token. `claim_next` increments it; `complete`, `fail` and `lock_running` only act when `status = 'running'` and `attempts` matches, and every document or chunk write happens after `lock_running` (`FOR UPDATE`) in the same transaction. A slow worker whose job was requeued and re-claimed therefore writes nothing.
 
-**Failures (AC-9):** permanent errors (corrupt or encrypted PDF, no extractable text, non-UTF-8 text, missing Storage object, malformed FAQ file or unknown kind) set the document `failed` at once with a fixed readable sentence and fail the job without retry. Transient errors (Storage 5xx or timeout, retryable provider error, anything unexpected) requeue the job after `INGEST_RETRY_BASE_SECONDS * 4^(attempts-1)` (30 s, then 120 s) and put the document back to `queued`; on the last attempt (`max_attempts` 3) the document becomes `failed`. `documents.error` only ever holds those fixed sentences (at most 500 characters). The technical class and message go to `jobs.last_error` (cut to 500 characters) and the log, never to the API. A job found `running` too long whose attempts are used up is failed by the sweep, and its document is set `failed` ("Processing was interrupted..."). Other jobs are unaffected because every job is handled inside its own try block and the loop never exits on an error.
+**Failures (AC-9):** permanent errors (corrupt or encrypted PDF, no extractable text, non-UTF-8 text, missing Storage object, malformed FAQ file or unknown kind) set the document `failed` at once with a fixed readable sentence and fail the job without retry. Transient errors (Storage 5xx or timeout, retryable provider error, anything unexpected) requeue the job after `INGEST_RETRY_BASE_SECONDS * 4^(attempts-1)` (30 s, then 120 s), or after the provider's `Retry-After` if that is longer (never shorter, capped at 300 s, below the 600 s stale sweep), and put the document back to `queued`; on the last attempt (`max_attempts` 3) the document becomes `failed`. `documents.error` only ever holds those fixed sentences (at most 500 characters). The technical class and message go to `jobs.last_error` (cut to 500 characters) and the log, never to the API. A job found `running` too long whose attempts are used up is failed by the sweep, and its document is set `failed` ("Processing was interrupted..."). Other jobs are unaffected because every job is handled inside its own try block and the loop never exits on an error.
 
-Not built yet: `triage_ticket` dispatch (the worker currently fails any non-ingest job type as "unknown job type"; step 14 must add a handler table), real Gemini embeddings (step 9).
+Any `LLMError` during ingestion is reported with the fixed provider sentence in `documents.error`; a permanent one (bad key, bad request, blocked) fails the document at once, and the admin must reprocess after fixing the cause.
 
-**Ask (synchronous)**: embed query, top-k by cosine on `org_id`, apply the threshold, build the prompt (system rules, chunks as delimited untrusted data, question), call `generate` with a JSON schema `{answer, cited_chunk_ids}`, validate, drop invalid citations, store the question row. Provider errors return 502 with a retryable message and store nothing as final (AC-21).
+Not built yet: `triage_ticket` dispatch (the worker currently fails any non-ingest job type as "unknown job type"; step 14 must add a handler table).
+
+**Ask (synchronous)**: embed query, top-k by cosine on `org_id`, apply the threshold, build the prompt (system rules, chunks as delimited untrusted data, question), call `generate_validated` with a small JSON schema `{answer, cited_chunk_ids}`, drop invalid citations, store the question row. The query is embedded with `kind='query'`. Any `LLMError` returns 502 `llm_unavailable` with a fixed retryable message (no provider text) and stores nothing as final (AC-21). That handler is not built yet (step 10).
 
 **Triage (`triage_ticket`)**: step 1 classify to `{category, priority}`, with one retry on schema failure and fallback `Other/Medium` (AC-29). Step 2 retrieve using the ticket text. Step 3 draft with citations. Insert the draft and set `awaiting_review`. After max attempts, set `needs_manual_reply` (AC-31). The job as a whole is idempotent (AC-32).
 
-**Prompt-injection posture**: document and ticket text is placed inside delimited data blocks, the model is told it is data, output is schema-validated, and there are no tools. A test document with injected instructions is part of the test suite (AC-38).
+**LLM provider (step 9)** (`app/llm/`):
+
+- **Interface.** `Embedder.embed(texts, *, kind)` returns one 768-float vector per text; `kind` is `document` (chunks) or `query` (questions). `LLMProvider` adds `generate(prompt, schema, *, system, temperature, max_output_tokens) -> dict`. `embed_in_batches` validates counts and dimensions. `get_provider()` returns the fake (uncached, with a one-time warning) or a cached `GeminiProvider`. Ingestion and the worker depend only on `Embedder`.
+- **Errors.** Every failure is an `LLMError(message, retryable, retry_after)` with fixed text: never the key, URL, request body or provider response body. Messages carry the operation and the numeric status only.
+
+| Gemini result | Exception | Retryable |
+|---|---|---|
+| 429 | `LLMRateLimited` (`retry_after` from the header, if numeric) | yes |
+| 408, 5xx, timeout, network error, non-JSON 2xx | `LLMUnavailable` | yes |
+| 401, 402, 403 | `LLMAuthError` | no |
+| other 4xx | `LLMBadRequest` | no |
+| prompt or response blocked (`blockReason`, SAFETY and similar finish reasons) | `LLMBlocked` | no |
+| no candidates, empty or non-JSON output, schema mismatch, `MAX_TOKENS` | `LLMMalformedOutput` | yes |
+| bad embedding response (count, dimension, non-number, zero norm) or oversized input | `EmbeddingError` | no |
+
+- **Gemini provider.** `httpx` over the REST API, no SDK. The key is sent only in the `x-goog-api-key` header, per request, never in a URL or stored on the client. Embeddings use `batchEmbedContents` with a task type (`RETRIEVAL_DOCUMENT` or `RETRIEVAL_QUERY`), 768 output dimensions and L2 normalisation; limits are 100 texts per call and 8000 characters per text. Generation uses `generateContent` with `responseMimeType: application/json` and a schema; the `tools` field is never sent (rule 3). The provider does not retry; the job queue (ingestion) or the caller does.
+- **Structured output.** `generate_validated(provider, prompt, schema, PydanticModel)` validates the result and retries exactly once, only on `LLMMalformedOutput`. Other errors propagate at once. Schemas are small hand-written dicts, not `model_json_schema()`.
+- **Boot validation.** `LLM_PROVIDER` has no default. `missing_required()` (checked in the lifespan, which refuses to boot) reports an unset or unknown `LLM_PROVIDER`, and for `gemini` a missing `GEMINI_API_KEY`, `EMBED_BATCH_SIZE` outside 1 to 100, `CHUNK_MAX_CHARS` above 8000, a non-https `GEMINI_BASE_URL` and invalid model names. Settings: `GEMINI_EMBED_MODEL` (`gemini-embedding-001`), `GEMINI_GENERATION_MODEL` (`gemini-3.5-flash-lite`), `GEMINI_BASE_URL`, `LLM_TIMEOUT_SECONDS` (30; generation reads wait twice that).
+- **Unverified.** Gemini was never called. The REST field names, response shapes, model ids, the 768 dimension option and the free-tier quota are from memory and must be checked in a live check before real vectors are stored.
+
+**Prompt-injection posture**: document and ticket text is placed inside delimited data blocks (`prompts.data_block`: a random per-call nonce in the closing marker, plus `DATA_NOTICE` telling the model the text is data), the model is told it is data, output is schema-validated, and there are no tools. A test document with injected instructions is part of the test suite (AC-38).
 
 ## 6. Repository structure
 
@@ -262,7 +284,7 @@ Routes stay thin: they check auth and input, then call a service. Services own b
 
 ## 10. Remaining open items
 
-- Exact Gemini model names and the embedding dimension (768 assumed). Confirm against current provider docs before the M1 migration.
+- Gemini REST details, model ids (`gemini-embedding-001`, `gemini-3.5-flash-lite`), the 768 dimension option and the free-tier quota: chosen in step 9 but unverified until a live check; the AI Studio free quota for the generation model has not been confirmed.
 - Similarity threshold, top-k, chunk size and rate limit values. Tune in M3 and M6.
 - Whether the worker keeps running inside the API process (decided for step 7: a daemon thread in the lifespan) or moves to a second Render service later. A second service would avoid idle sleep, but it is not free-tier-safe. A single page that makes pypdf hang would stall that process; a subprocess with a hard timeout is the fix if it ever matters.
 - Weekly time budget and target dates for the milestones above.

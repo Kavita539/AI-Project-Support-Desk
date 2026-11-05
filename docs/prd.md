@@ -154,7 +154,7 @@ Each criterion is testable by an automated test or a scripted manual check.
 
 ## 8. Open items
 
-- Embedding model and vector dimension (confirm against current provider docs before schema work).
+- Embedding model and vector dimension: `gemini-embedding-001` at 768 dimensions was chosen in step 9 but is unverified until a live check against the provider.
 - Whether to enable Supabase row-level security in addition to API-level scoping (recommended).
 - Weekly time budget and target dates for milestones.
 - Exact thresholds (similarity cutoff, file limits, rate limits) to be tuned during M3 and M6 using the eval set.
