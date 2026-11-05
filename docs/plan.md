@@ -8,7 +8,8 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 ## M1 Schema, auth, tenancy
 - [x] 2. Migrations: orgs, profiles, documents, chunks (`vector(768)`), tickets, drafts, jobs, indexes
 - [x] 3. RLS policies as backstop (applied to the linked Supabase project)
-- [ ] 4. JWT verification, `profiles` lookup, `GET /api/v1/me`
+- [x] 4. JWT verification, `profiles` lookup, `GET /api/v1/me`
+- [ ] 4b. `/me` creates the profile and org on first login, first user of a new org is Admin (docs/design.md, `/me` row). Needs a decision on how a new user's org is named or joined
 - [ ] 5. Tenancy tests (cross-org 404, wrong role 403, no token 401)
 
 ## M2 Documents and ingestion
