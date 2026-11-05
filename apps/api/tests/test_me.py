@@ -41,7 +41,7 @@ def test_me_with_garbage_token_is_401(client: TestClient) -> None:
 
 def test_me_with_expired_token_is_401(client: TestClient, db: FakeDb) -> None:
     profile = db.add_profile()
-    token = make_token(profile.user_id, expires_in=-60)
+    token = make_token(profile.user_id, expires_in=-300)
     assert client.get("/api/v1/me", headers=auth(token)).status_code == 401
 
 

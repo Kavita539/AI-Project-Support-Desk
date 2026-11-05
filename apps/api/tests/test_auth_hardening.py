@@ -187,3 +187,29 @@ def test_settings_missing_required_and_cors_parsing() -> None:
     )
     assert full.missing_required() == []
     assert full.cors_origin_list == ["https://a.vercel.app", "http://localhost:5173"]
+
+
+# --- clock skew (found by the live end-to-end check: this machine ran ~109s behind) ---
+
+
+def test_token_issued_in_the_future_is_accepted(client: TestClient, db: FakeDb) -> None:
+    """Our clock behind Supabase's makes fresh tokens look issued in the future."""
+    profile = db.add_profile()
+    token = make_token(profile.user_id, iat=int(time.time()) + 120)
+    assert client.get("/api/v1/me", headers=auth(token)).status_code == 200
+
+
+def test_token_expired_within_the_skew_allowance_is_accepted(
+    client: TestClient, db: FakeDb
+) -> None:
+    profile = db.add_profile()
+    token = make_token(profile.user_id, expires_in=-30)
+    assert client.get("/api/v1/me", headers=auth(token)).status_code == 200
+
+
+def test_token_expired_beyond_the_skew_allowance_is_rejected(
+    client: TestClient, db: FakeDb
+) -> None:
+    profile = db.add_profile()
+    token = make_token(profile.user_id, expires_in=-300)
+    assert client.get("/api/v1/me", headers=auth(token)).status_code == 401

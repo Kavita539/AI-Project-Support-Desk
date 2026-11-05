@@ -24,6 +24,9 @@ KeyResolver = Callable[[str], object]
 # can forge a token by claiming a weaker algorithm.
 _ALGORITHMS = ["ES256", "RS256"]
 
+# How far our clock may differ from Supabase's before we reject a token's exp.
+_CLOCK_SKEW_SECONDS = 60
+
 _bearer = HTTPBearer(auto_error=False)
 
 
@@ -60,7 +63,11 @@ def verify_token(token: str, resolve_key: KeyResolver) -> Identity:
             algorithms=_ALGORITHMS,
             audience="authenticated",
             issuer=get_settings().jwt_issuer,
-            options={"require": ["exp", "sub"]},
+            # Clocks drift: a server a few seconds behind Supabase would otherwise reject
+            # fresh tokens. The signature and exp already prove the token is genuine and
+            # current, so the "issued at" check adds nothing and only breaks on skew.
+            leeway=_CLOCK_SKEW_SECONDS,
+            options={"require": ["exp", "sub"], "verify_iat": False},
         )
         email = claims.get("email")
         return Identity(UUID(str(claims["sub"])), email if isinstance(email, str) else None)
