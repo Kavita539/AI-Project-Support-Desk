@@ -41,3 +41,6 @@ files = ["app", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: needs a real Postgres (TEST_DATABASE_URL); skipped when it is not set",
+]
