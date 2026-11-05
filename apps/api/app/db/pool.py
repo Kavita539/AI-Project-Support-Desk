@@ -1,8 +1,10 @@
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated
 
 from fastapi import Depends
 from psycopg import Connection
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
 
@@ -30,6 +32,20 @@ def close_pool() -> None:
     if _pool is not None:
         _pool.close()
         _pool = None
+
+
+@contextmanager
+def borrow_conn() -> Iterator[Connection[dict[str, object]]]:
+    """Borrow a pooled connection for non-request code (the worker). The connection goes
+    back to the pool clean: any transaction still open is rolled back."""
+    if _pool is None:
+        raise RuntimeError("Database pool is not open.")
+    with _pool.connection(timeout=10.0) as conn:
+        try:
+            yield conn
+        finally:
+            if conn.info.transaction_status != TransactionStatus.IDLE:
+                conn.rollback()
 
 
 def get_conn() -> Iterator[Connection[dict[str, object]]]:

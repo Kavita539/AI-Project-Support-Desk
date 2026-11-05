@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 
@@ -10,17 +12,36 @@ from app.db.pool import close_pool, open_pool
 from app.errors import install_error_handlers
 from app.routes import documents, me, onboarding, org
 from app.services.documents import MAX_BYTES
+from app.worker import build_worker
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    missing = get_settings().missing_required()
+    settings = get_settings()
+    missing = settings.missing_required()
     if missing:
         # Better to refuse to boot than to serve broken auth.
         raise RuntimeError(f"Missing required settings: {', '.join(missing)}")
     open_pool()
-    yield
-    close_pool()
+    worker = None
+    if settings.worker_enabled:
+        try:
+            worker = build_worker()
+        except Exception:
+            # A bad provider setting must not take auth, upload and health down with it.
+            logger.exception("Ingestion worker disabled: could not build it")
+    if worker is not None:
+        worker.start()
+    try:
+        yield
+    finally:
+        # Stop the worker first: it borrows connections from the pool we are about to close.
+        # stop() joins the thread (up to 15 s), so keep it off the event loop.
+        if worker is not None:
+            await asyncio.to_thread(worker.stop)
+        close_pool()
 
 
 app = FastAPI(title="AI Project Support Desk", lifespan=lifespan)
