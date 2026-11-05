@@ -177,8 +177,12 @@ def test_get_profile_returns_none_when_no_row() -> None:
 
 
 def test_settings_missing_required_and_cors_parsing() -> None:
+    # conftest sets LLM_PROVIDER=fake, so only the two URLs are missing here.
     empty = Settings(_env_file=None)  # type: ignore[call-arg]
     assert empty.missing_required() == ["DATABASE_URL", "SUPABASE_URL"]
+    # Explicitly unset provider is also reported, after the URLs.
+    unset = Settings(_env_file=None, llm_provider="")  # type: ignore[call-arg]
+    assert unset.missing_required() == ["DATABASE_URL", "SUPABASE_URL", "LLM_PROVIDER"]
     full = Settings(
         _env_file=None,  # type: ignore[call-arg]
         database_url="postgresql://x",

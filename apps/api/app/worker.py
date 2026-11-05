@@ -11,7 +11,7 @@ from app.db import jobs
 from app.db.pool import borrow_conn
 from app.db.queries import documents
 from app.llm import get_provider
-from app.llm.base import LLMProvider
+from app.llm.base import Embedder
 from app.services.ingestion import JOB_TYPE, Borrow, ingest_job
 from app.storage import Storage, get_storage
 
@@ -22,7 +22,7 @@ _ERROR_PAUSE_SECONDS = 1.0
 
 
 def process_one(
-    borrow: Borrow, storage: Storage, provider: LLMProvider, settings: Settings
+    borrow: Borrow, storage: Storage, provider: Embedder, settings: Settings
 ) -> bool:
     """Claim and run at most one job. True if a job was run, False if the queue is idle."""
     with borrow() as conn:
@@ -65,7 +65,7 @@ def sweep_stale(borrow: Borrow, settings: Settings) -> int:
 
 class IngestionWorker:
     def __init__(
-        self, borrow: Borrow, storage: Storage, provider: LLMProvider, settings: Settings
+        self, borrow: Borrow, storage: Storage, provider: Embedder, settings: Settings
     ) -> None:
         self._borrow = borrow
         self._storage = storage

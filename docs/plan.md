@@ -14,11 +14,11 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 
 ## M2 Documents and ingestion
 - [x] 6. Upload endpoint (`POST /documents`, `GET /documents/{id}`) with type, size and page checks, Storage client, `jobs` module with claim via `SKIP LOCKED`; the `jobs` table itself came with the step 3 schema. First ID-based route, so the cross-org 404 test now runs
-- [x] 7. Ingestion worker: parse, chunk, embed, idempotent re-ingest. Worker thread in the API lifespan, attempts-fenced jobs, fake embeddings only (real Gemini is step 9)
+- [x] 7. Ingestion worker: parse, chunk, embed, idempotent re-ingest. Worker thread in the API lifespan, attempts-fenced jobs, fake embeddings (the Gemini provider came with step 9)
 - [x] 8. Document list/delete and FAQ entry endpoints: `GET /documents` (paged), `POST /documents/faq`, `POST /documents/{id}/reprocess`, `DELETE /documents/{id}`, all admin-only. FAQ text is stored as a Storage object so the existing worker ingests it. `Storage.delete` now tolerates Supabase's 400 not-found body. `GET /documents/{id}/source` and the Documents web page are not part of this step (source belongs with citations, steps 10 to 12; the page with the UI steps)
 
 ## M3 Retrieval and ask
-- [ ] 9. Gemini provider and `generate` on the `LLMProvider` interface (the interface, `embed` and the fake provider came with step 7)
+- [x] 9. Gemini provider and `generate` on the `LLMProvider` interface: `LLMError` family, `embed(kind=)`, `GeminiProvider` over httpx (mocked-transport tests only), `generate_validated`, `data_block` prompt helper, `LLM_PROVIDER` required with boot validation, Retry-After honoured by ingestion. **The live Gemini check has not happened**: REST field names, response shapes, model ids and free-tier limits are unverified, and real vectors have never been stored
 - [ ] 10. Retrieval, "I don't know" gate, `/ask` with server-verified citations
 - [ ] 11. Eval set, injection fixture, threshold tuning
 
