@@ -50,6 +50,10 @@ orgs(id, name, created_at)
 profiles(user_id PK -> auth.users, org_id, role, email, created_at)
   role: 'admin' | 'agent' | 'customer'
 
+org_join_codes(org_id PK -> orgs, code unique, created_at)
+  -- kept out of `orgs` because customers can read their own org row through RLS;
+  -- RLS is on with no policies, so only the API (service role) can read it
+
 documents(id, org_id, name, kind, storage_path, status, error, page_count,
           size_bytes, created_by, created_at)
   kind:   'pdf' | 'md' | 'txt' | 'faq'
@@ -110,7 +114,9 @@ Errors use `{ "error": { "code": "...", "message": "..." } }`. The status codes 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
 | GET | `/health` | public | Liveness; also used to warm the host |
-| GET | `/me` | any | `{user_id, email, org_id, role}`; creates the profile and org on first login (first user of a new org is Admin) |
+| GET | `/me` | any | `{user_id, email, org_id, role}`. Read-only. A valid token with no profile returns 403 `no_profile`; the web app then sends the user to onboarding |
+| POST | `/onboarding` | any (no profile yet) | Exactly one of `{org_name}` (creates the org, caller becomes Admin, response includes the join code) or `{join_code}` (joins that org as Customer). The body never carries `org_id` or `role` (unknown fields are rejected). Org, code and profile are written in one transaction. 409 `already_onboarded` if a profile exists, 404 `invalid_join_code` for a wrong code |
+| GET | `/org/join-code` | admin | The org's join code |
 | GET | `/org/users` | admin | List org users |
 | PATCH | `/org/users/{id}` | admin | Set a user's role (basic assignment flow) |
 
