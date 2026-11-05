@@ -2,14 +2,15 @@
 
 Read this first in a new session, then `CLAUDE.md` and `docs/plan.md`. No secrets belong in this file. Update it at the end of every plan step, in the same branch as the code (see "Docs are part of done" in `CLAUDE.md`).
 
-Last updated: 2026-11-05, end of step 5 on branch `feat/tenancy-tests` (committed, not pushed, not yet merged). `main` is at `d603214`.
+Last updated: 2026-11-05, end of step 6 on branch `feat/upload-jobs` (committed, not pushed, not merged). `main` is at `8741ef4` (step 5 merged as PR #5).
 
 ## Where we are
 
-- Plan steps 1 to 5 are done. Steps 1 to 4b are merged (PRs #1 to #4); step 5 is on `feat/tenancy-tests` awaiting push and PR. **Step 6 (upload endpoint, jobs table) is next**; branch from `main` only after step 5 is merged.
-- API endpoints that exist: `GET /api/v1/health`, `GET /me` (read-only), `POST /onboarding`, `GET /org/join-code` (admin). Nothing else yet: no documents, ask or tickets.
-- `ruff` and `mypy` are clean; `pytest` gives 100 passed, 15 skipped from `apps/api`. The skips are 14 integration tests (no `TEST_DATABASE_URL` locally) and 1 empty parametrization (`test_cross_org_id_is_404`, no ID routes yet).
-- **The 14 integration tests only run in CI.** There is no Docker or Postgres on this machine. CI (Postgres service container) went green on `529e8fe`, but the pass count was not read from the log, so "ran and passed" is inferred from the green job. If they fail later, suspect the stub SQL or an exception class first.
+- Plan steps 1 to 6 are done. Steps 1 to 5 are merged (PRs #1 to #5); step 6 is on `feat/upload-jobs` awaiting push and PR. **Step 7 (ingestion worker) is next**; branch from `main` only after step 6 is merged.
+- API endpoints that exist: `GET /api/v1/health`, `GET /me` (read-only), `POST /onboarding`, `GET /org/join-code` (admin), `POST /documents` and `GET /documents/{id}` (admin). Nothing for ask or tickets yet.
+- `ruff` and `mypy` are clean; `pytest` gives 154 passed, 29 skipped from `apps/api`. All 29 skips are integration tests (14 onboarding, 4 documents, 11 jobs) because `TEST_DATABASE_URL` is unset locally. `test_cross_org_id_is_404` now runs 1 case.
+- **The 29 integration tests only run in CI.** There is no Docker or Postgres on this machine. The 15 added in step 6 have never been executed anywhere yet: check the CI log for them first. If they fail, suspect the SQL (`make_interval` casts, `Jsonb` round-trip) or the fixture cleanup order (see "Known gaps").
+- **The Storage bucket does not exist yet.** The upload needs a private bucket named `documents` (setting `STORAGE_BUCKET`) in the Supabase project; creating it is the user's decision. The real Storage REST calls (`app/storage.py`) have only been tested against a mock transport.
 - Supabase project `support-desk` (production, free plan, region ap-south-1). Project ref: `yiakeyeohwpbjjseugha`. The older paused project `task-manager` in the same org is unrelated; do not use it.
 - Migrations applied to it (all four are in `supabase/migrations/`): `20261028000001_schema`, `20261028000002_rls`, `20261105000001_org_join_codes`, `20261105000002_org_join_codes_hardening`.
 - A live end-to-end check of onboarding (real API, Supabase Auth, real database) passed 30/30 on 2026-11-05 and left nothing behind. The script was a throwaway in a scratchpad and is **not in the repo**; see "Step 6 starting notes".
@@ -22,13 +23,16 @@ apps/api/app/
   auth.py           verify_token -> Identity(user_id, email); get_identity; get_current_user (profiles row); require_role(...)
   errors.py         ApiError + handlers: every error is {"error": {"code", "message"}}, incl. 404, 422 and unexpected 500
   db/pool.py        psycopg pool; `Conn` = the connection dependency to use in routes (see decisions)
-  db/queries/       profiles.py, orgs.py (raw SQL)
-  services/         onboarding.py (create_org, join_org, join-code helpers)
-  routes/           me.py, onboarding.py, org.py
+  db/queries/       profiles.py, orgs.py, documents.py (raw SQL)
+  db/jobs.py        enqueue, claim_next (SKIP LOCKED), complete, fail, requeue_stale. claim_next and requeue_stale are global on purpose
+  storage.py        Storage protocol + SupabaseStorage (httpx, service-role key); tests use FakeStorage
+  services/         onboarding.py (create_org, join_org, join-code helpers), documents.py (upload validation + orchestration)
+  routes/           me.py, onboarding.py, org.py, documents.py
+  main.py           also holds a middleware that refuses oversized or length-less POST /documents bodies before parsing
 apps/api/tests/     conftest.py has FakeDb / FakeConn, make_token() and the `two_orgs` fixture (orgs A and B, each with admin, agent, customer)
                     endpoint_matrix.py: one row per /api/v1 route; test_tenancy.py: completeness + 401/403/org_id-from-client tests
-                    test_me, test_onboarding, test_auth_hardening, test_db_scope, test_health
-  integration/      real-Postgres tests (skipped unless TEST_DATABASE_URL is set): supabase_stubs.sql, conftest.py, test_onboarding_sql.py
+                    test_me, test_onboarding, test_documents_upload, test_storage, test_auth_hardening, test_db_scope, test_health
+  integration/      real-Postgres tests (skipped unless TEST_DATABASE_URL is set): supabase_stubs.sql, conftest.py, test_onboarding_sql.py, test_documents_sql.py, test_jobs_sql.py
 ```
 
 ## Environment
@@ -55,6 +59,8 @@ The customer Ask page was built first against a mock API, then stashed so branch
 - **Onboarding (option C):** `/me` is read-only (403 `no_profile` for a new user). `POST /onboarding` takes exactly one of `org_name` (caller becomes Admin and gets the join code) or `join_code` (caller becomes Customer). Unknown body fields such as `org_id` or `role` are rejected. Admins promote staff with `PATCH /org/users/{id}` (not built yet).
 - **Join codes** live in `org_join_codes` (RLS on, no policies, no grants to `anon` or `authenticated`), not on `orgs`, because customers can read their own org row through RLS.
 - **DB connections:** always take `conn: Conn` from `app/db/pool.py`, never `Depends(get_conn)` directly. `Conn` is function-scoped so a write commits before the response is sent; the default scope would commit after the client has the 201. Inside a service, run a read that precedes a write inside the same `with conn.transaction():`, otherwise psycopg uses a savepoint and nothing commits until later.
+- **Upload (step 6):** through the API, admin only, `.pdf/.md/.txt`, 10 MB, 100 PDF pages. File goes to Storage first, then row + job commit together; a failed DB step deletes the file. The service calls `conn.commit()` itself because the auth lookup already opened the transaction (otherwise `conn.transaction()` is only a savepoint). Added `GET /documents/{id}` earlier than planned so the cross-org 404 test has an ID route.
+- **Jobs:** `claim_next` is one UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1). It and `requeue_stale` are the only queries not scoped by `org_id`; the worker must use the claimed job's `org_id` afterwards. CLAUDE.md rule 1 has no carve-out for this; consider adding one.
 - UI-first on the Ask page was a deliberate deviation from plan order (step 12 before steps 4 to 11).
 - The user is a front-end engineer learning backend: explain decisions in plain language, keep summaries short.
 
@@ -64,17 +70,23 @@ The customer Ask page was built first against a mock API, then stashed so branch
 - The integration conftest DROPS the `public` and `auth` schemas. It refuses non-local hosts and any URL with a query string. Never point `TEST_DATABASE_URL` at Supabase or an SSH tunnel to it.
 - Atomicity tests must leave the connection idle (`conn.commit()`) before calling the service and must not `conn.rollback()` afterwards, otherwise `conn.transaction()` is only a savepoint and the test cannot fail.
 - The route-completeness test uses a FastAPI internal (`effective_route_contexts`) because `include_router` routes are lazy in this FastAPI version. If a FastAPI upgrade breaks it, fix `_registered_routes()` in `tests/test_tenancy.py`.
+- Upload holds a pooled DB connection (max 5) while it parses the PDF and calls Storage (up to 30 s). Five slow concurrent uploads can make other requests return 503 `db_unavailable`. Fix later by releasing the connection before the Storage call.
+- A strict `%PDF-` check at byte 0 rejects the rare valid PDF with junk before the header (415).
+- The new integration tests clean the `jobs` and `documents` tables in a fixture that must run before `World.cleanup()` (those tables reference orgs without cascade).
 - No rate limiting. Join-code guessing (2^40 codes) and unlimited org creation are deferred to step 16.
 - Join codes cannot be rotated or expire. Orgs created by the future seed script need a code inserted (`GET /org/join-code` returns 404 for an org without one).
 - CI has a Postgres service container (added in step 5) and was green on `529e8fe`.
 - The Starlette test-client `httpx` deprecation warning is known and harmless.
 
-## Step 6 starting notes
+## Step 7 starting notes
 
-- Every new route needs a row in `tests/endpoint_matrix.py` or `test_tenancy.py` fails. ID-based routes (documents, tickets) must set `cross_org_404=True` and a `cross_org_path`, so the dormant cross-org 404 test finally runs; check that it does.
-- New SQL should get integration tests in `tests/integration/`.
-- Left from the step 5 code review: (a) make `test_cross_org_id_is_404` also assert the owner org gets 2xx on the same path, so a mistyped path or a handler that 404s for everyone fails; (b) add a matrix case for a valid token whose user has no profile (403 `no_profile`); (c) the integration DB guard cannot detect an SSH tunnel to a real database, so keep `TEST_DATABASE_URL` pointed only at a throwaway database.
-- Deferred from step 5 (user chose to skip): promote the live end-to-end check into a rerunnable script in `apps/api/scripts/` (temporary users and orgs tagged with a random marker, deleting only those). It touches the live project, so it needs the user's approval each run.
+- Worker loop: call `jobs.claim_next`, then use the job's `org_id`. `complete` and `fail` have no fencing token: a slow worker whose job was re-queued by `requeue_stale` and re-claimed could finish the other worker's attempt. Match on `attempts` or `locked_at` when building the worker.
+- `fail()` stores `last_error` untruncated; truncate before copying it into `documents.error` (that field is returned by `GET /documents/{id}`).
+- Re-ingest must delete and insert chunks in one transaction, and the same explicit-`commit()` care applies.
+- pypdf only counts pages at upload. Parsing hostile PDFs during ingestion could hang; consider a timeout.
+- Every new route needs a matrix row in `tests/endpoint_matrix.py` (`cross_org_404=True` and `cross_org_path` for ID routes).
+- `FakeDocs` lives in `tests/test_documents_upload.py` and is imported by `test_tenancy.py`; move it to `conftest.py` when convenient.
+- Deferred from step 5: a rerunnable live end-to-end check script in `apps/api/scripts/` (needs the user's approval each run).
 
 ## Useful checks
 
