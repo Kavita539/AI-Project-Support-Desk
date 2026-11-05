@@ -102,7 +102,7 @@ Notes:
 - Allowed ticket transitions (AC-26):
   `open -> awaiting_review | needs_manual_reply`, `awaiting_review -> answered | needs_manual_reply`, `needs_manual_reply -> awaiting_review | answered`, `answered -> closed`, `open -> closed`. Enforced in one `transition()` function.
 - Retrieval SQL shape (the `org_id` argument always comes from the auth dependency):
-  `SELECT id, document_id, content, page, 1 - (embedding <=> $q) AS score FROM chunks WHERE org_id = $org ORDER BY embedding <=> $q LIMIT $k`.
+  `SELECT c.id, c.document_id, d.name, c.content, c.page, c.section, 1 - (c.embedding <=> $q) AS score FROM chunks c JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id WHERE c.org_id = $org ORDER BY c.embedding <=> $q LIMIT $k` (`search_chunks` in `db/queries/chunks.py`).
 
 ## 4. API
 
@@ -129,7 +129,7 @@ Token verification: the API checks the bearer token against Supabase's public ke
 | POST | `/documents` | admin | Multipart upload (`.pdf/.md/.txt`, 10 MB, 100 pages); stores the file, inserts a `queued` row and an `ingest_document` job |
 | GET | `/documents/{id}` | admin | One document with status and error; another org's id returns 404 |
 | POST | `/documents/faq` | admin | `{question, answer}` (question 1 to 300 characters, answer 1 to 2400, unknown fields such as `org_id` rejected with 422). Creates a `faq` document and job; returns 201 with the document summary |
-| GET | `/documents/{id}/source` | any | Signed URL (or the FAQ text) for citation links; same-org only. **Not built yet** (comes with citations, steps 10 to 12) |
+| GET | `/documents/{id}/source` | any | Signed URL (or the FAQ text) for citation links; same-org only. **Not built yet** (comes with the Ask UI, step 12; `/ask` citations have no link until then) |
 | POST | `/documents/{id}/reprocess` | admin | Re-enqueue ingestion of a `ready` or `failed` document; 202 with the document (now `queued`). 409 `already_processing` while `queued` or `processing`, 409 `not_reprocessable` if it has no stored file |
 | DELETE | `/documents/{id}` | admin | Remove the Storage object, then the row (chunks and embeddings go via `ON DELETE CASCADE`) and the document's queued ingest jobs; 204. 502 `storage_error` keeps the row |
 
@@ -148,7 +148,7 @@ Job queue (`app/db/jobs.py`): `claim_next` and `requeue_stale` are deliberately 
 ### Ask
 | Method | Path | Role | Purpose |
 |---|---|---|---|
-| POST | `/ask` | customer, agent, admin | `{query}` returns `{question_id, status, answer, citations[]}`; rate-limited (AC-23). Runs retrieve, gate, generate, citation check |
+| POST | `/ask` | customer, admin | Body `{query}` (stripped, 1 to 1000 characters, no NUL; unknown fields such as `org_id` are 422). Returns `{question_id, status, answer, citations[]}`: `status` is `answered` or `no_answer`; each citation is `{chunk_id, document_id, document_name, page, section, snippet}` (snippet = chunk text, whitespace collapsed, cut to 300 characters; no source link yet). `no_answer` carries a fixed sentence and no citations. 502 `llm_unavailable` on any LLM or embedding failure (fixed message, nothing stored). 413 `body_too_large` over 16 KB and 411 without `Content-Length`, both before parsing. Agents get 403 for now. Rate limit (AC-23) is not built (step 16) |
 | POST | `/questions/{id}/feedback` | owner | `{helpful: bool}` (AC-20) |
 | GET | `/questions` | owner | Own history (optional, small) |
 
@@ -194,7 +194,7 @@ Any `LLMError` during ingestion is reported with the fixed provider sentence in 
 
 Not built yet: `triage_ticket` dispatch (the worker currently fails any non-ingest job type as "unknown job type"; step 14 must add a handler table).
 
-**Ask (synchronous)**: embed query, top-k by cosine on `org_id`, apply the threshold, build the prompt (system rules, chunks as delimited untrusted data, question), call `generate_validated` with a small JSON schema `{answer, cited_chunk_ids}`, drop invalid citations, store the question row. The query is embedded with `kind='query'`. Any `LLMError` returns 502 `llm_unavailable` with a fixed retryable message (no provider text) and stores nothing as final (AC-21). That handler is not built yet (step 10).
+**Ask (synchronous, step 10)**: `services/answering.py::ask`. (1) `retrieve` embeds the question with `kind='query'` (checked to be 768 floats) and runs `search_chunks`: top `RETRIEVAL_TOP_K` (5) chunks of the caller's org by cosine distance, `1 - (embedding <=> q)` as the score, joined to `documents` for the name, with `org_id` filtered on both tables. (2) The gate (`passes_gate`): if there are no chunks or the best score is below `RETRIEVAL_MIN_SCORE` (0.80), the LLM is not called. Both values are placeholders measured loosely in the step 9 live check (real cosine 0.88 for a matching text, 0.74 for an unrelated one) and are tuned in step 11. Both are validated at boot (`missing_required`). (3) Otherwise the prompt is each retrieved chunk in its own `data_block` (source = the chunk id) followed by the question in a `data_block`; the system prompt (`ASK_SYSTEM`) holds the rules and `DATA_NOTICE` and nothing untrusted. `generate_validated` is called with the hand-written schema `{answer, cited_chunk_ids}`. (4) `verify_citations` keeps only cited ids that are in the retrieved set (case and spaces ignored, repeats dropped, model order kept). An empty answer or no surviving citation gives `no_answer` with the fixed sentence, and the model's text is discarded. (5) The question row is stored (`questions`: query, final answer, status, retrieved chunk ids, citations, top_score) and committed. Even `no_answer` rows keep the retrieved ids and top score so a later ticket can snapshot them (AC-24). Any `LLMError` (embedding or generation) propagates to the app-wide handler, which returns 502 `llm_unavailable` with a fixed retryable message and logs only the exception class and its fixed text; nothing is stored (AC-21). Like upload, the request holds its pooled connection during the embed and generate calls.
 
 **Triage (`triage_ticket`)**: step 1 classify to `{category, priority}`, with one retry on schema failure and fallback `Other/Medium` (AC-29). Step 2 retrieve using the ticket text. Step 3 draft with citations. Insert the draft and set `awaiting_review`. After max attempts, set `needs_manual_reply` (AC-31). The job as a whole is idempotent (AC-32).
 

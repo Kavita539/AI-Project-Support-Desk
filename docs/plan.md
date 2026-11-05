@@ -19,7 +19,7 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 
 ## M3 Retrieval and ask
 - [x] 9. Gemini provider and `generate` on the `LLMProvider` interface: `LLMError` family, `embed(kind=)`, `GeminiProvider` over httpx (mocked-transport tests only), `generate_validated`, `data_block` prompt helper, `LLM_PROVIDER` required with boot validation, Retry-After honoured by ingestion. **The live Gemini check passed** (embed, query relevance, generate with a schema, bad-key mapping; no database). Free-tier limits, a real 429 and storing real vectors in pgvector are still unverified
-- [ ] 10. Retrieval, "I don't know" gate, `/ask` with server-verified citations
+- [x] 10. Retrieval, "I don't know" gate, `/ask` with server-verified citations: `search_chunks` (cosine, org-scoped), gate on top score (`RETRIEVAL_MIN_SCORE` 0.80, `RETRIEVAL_TOP_K` 5, both placeholders for step 11), `answering.ask`, `POST /ask` for customer and admin, `questions` rows stored, 502 `llm_unavailable` handler. The pgvector live check with real vectors is offered at the end of this step
 - [ ] 11. Eval set, injection fixture, threshold tuning
 
 ## M4 Ask UI
