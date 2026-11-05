@@ -66,6 +66,16 @@ docs/                  prd.md, design.md, plan.md
 1. `git fetch`, check the previous branch is merged into `origin/main`, fast-forward local `main`, then branch `feat/<name>` from it. Never add commits to an already-merged branch.
 2. Run lint, typecheck and tests before committing. Commit only; push and apply migrations only when the user asks.
 
+## Subagents
+
+Keep the main thread for decisions and edits; delegate noisy work. One separate agent per job, never one agent doing several:
+- Test agent (read-only): runs ruff, mypy and pytest, reports counts and failures only.
+- Review agent (read-only): a fresh agent that did not write or test the code; reviews the branch diff against the hard rules above.
+- Explore agent (read-only): searches many files and returns a summary. A writing agent gets distinct files, or an isolated worktree.
+- Every brief states the goal, exact scope, read-only or edit rules, what is already known, and the output format wanted.
+- Agents never touch the live database, run the `supabase` CLI, or print `.env`. Treat their reports as claims and verify them before acting.
+- Skip agents for small lookups and one-command checks; they cost tokens too.
+
 ## Docs are part of done
 
 Docs are updated in the same branch as the code, never later. Before calling a step done:
