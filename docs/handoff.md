@@ -9,7 +9,7 @@ Last updated: 2026-11-05, end of step 5 on branch `feat/tenancy-tests` (committe
 - Plan steps 1 to 5 are done. Steps 1 to 4b are merged (PRs #1 to #4); step 5 is on `feat/tenancy-tests` awaiting push and PR. **Step 6 (upload endpoint, jobs table) is next**; branch from `main` only after step 5 is merged.
 - API endpoints that exist: `GET /api/v1/health`, `GET /me` (read-only), `POST /onboarding`, `GET /org/join-code` (admin). Nothing else yet: no documents, ask or tickets.
 - `ruff` and `mypy` are clean; `pytest` gives 100 passed, 15 skipped from `apps/api`. The skips are 14 integration tests (no `TEST_DATABASE_URL` locally) and 1 empty parametrization (`test_cross_org_id_is_404`, no ID routes yet).
-- **The 14 integration tests have never run.** There is no Docker or Postgres on this machine, so the first real run is CI after the push. If CI fails on them, suspect the stub SQL or an exception class first.
+- **The 14 integration tests only run in CI.** There is no Docker or Postgres on this machine. CI (Postgres service container) went green on `529e8fe`, but the pass count was not read from the log, so "ran and passed" is inferred from the green job. If they fail later, suspect the stub SQL or an exception class first.
 - Supabase project `support-desk` (production, free plan, region ap-south-1). Project ref: `yiakeyeohwpbjjseugha`. The older paused project `task-manager` in the same org is unrelated; do not use it.
 - Migrations applied to it (all four are in `supabase/migrations/`): `20261028000001_schema`, `20261028000002_rls`, `20261105000001_org_join_codes`, `20261105000002_org_join_codes_hardening`.
 - A live end-to-end check of onboarding (real API, Supabase Auth, real database) passed 30/30 on 2026-11-05 and left nothing behind. The script was a throwaway in a scratchpad and is **not in the repo**; see "Step 6 starting notes".
@@ -60,19 +60,20 @@ The customer Ask page was built first against a mock API, then stashed so branch
 
 ## Known gaps and risks
 
-- Unit tests use in-memory fakes, which hide real SQL, transactions and constraints. Step 5 added real-Postgres tests for onboarding, but they are unrun (see above) and cover only `create_org`, `join_org`, `get_profile` and the join-code table. Each later step that adds SQL should add integration tests too.
+- Unit tests use in-memory fakes, which hide real SQL, transactions and constraints. Step 5 added real-Postgres tests for onboarding, but they run only in CI (see above) and cover only `create_org`, `join_org`, `get_profile` and the join-code table. Each later step that adds SQL should add integration tests too.
 - The integration conftest DROPS the `public` and `auth` schemas. It refuses non-local hosts and any URL with a query string. Never point `TEST_DATABASE_URL` at Supabase or an SSH tunnel to it.
 - Atomicity tests must leave the connection idle (`conn.commit()`) before calling the service and must not `conn.rollback()` afterwards, otherwise `conn.transaction()` is only a savepoint and the test cannot fail.
 - The route-completeness test uses a FastAPI internal (`effective_route_contexts`) because `include_router` routes are lazy in this FastAPI version. If a FastAPI upgrade breaks it, fix `_registered_routes()` in `tests/test_tenancy.py`.
 - No rate limiting. Join-code guessing (2^40 codes) and unlimited org creation are deferred to step 16.
 - Join codes cannot be rotated or expire. Orgs created by the future seed script need a code inserted (`GET /org/join-code` returns 404 for an org without one).
-- CI now has a Postgres service container (added in step 5) but it has not run yet; it runs on the first push of `feat/tenancy-tests`.
+- CI has a Postgres service container (added in step 5) and was green on `529e8fe`.
 - The Starlette test-client `httpx` deprecation warning is known and harmless.
 
 ## Step 6 starting notes
 
 - Every new route needs a row in `tests/endpoint_matrix.py` or `test_tenancy.py` fails. ID-based routes (documents, tickets) must set `cross_org_404=True` and a `cross_org_path`, so the dormant cross-org 404 test finally runs; check that it does.
 - New SQL should get integration tests in `tests/integration/`.
+- Left from the step 5 code review: (a) make `test_cross_org_id_is_404` also assert the owner org gets 2xx on the same path, so a mistyped path or a handler that 404s for everyone fails; (b) add a matrix case for a valid token whose user has no profile (403 `no_profile`); (c) the integration DB guard cannot detect an SSH tunnel to a real database, so keep `TEST_DATABASE_URL` pointed only at a throwaway database.
 - Deferred from step 5 (user chose to skip): promote the live end-to-end check into a rerunnable script in `apps/api/scripts/` (temporary users and orgs tagged with a random marker, deleting only those). It touches the live project, so it needs the user's approval each run.
 
 ## Useful checks
