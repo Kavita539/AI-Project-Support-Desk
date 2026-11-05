@@ -45,9 +45,11 @@ def database_url() -> str:
     if url is None:
         pytest.skip(_SKIP_REASON)
     assert url is not None
-    host = urlparse(url).hostname
-    if host not in ("localhost", "127.0.0.1", "::1"):
-        pytest.fail(f"Refusing to reset a non-local test database (host={host!r}).")
+    parsed = urlparse(url)
+    if parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        pytest.fail(f"Refusing to reset a non-local test database (host={parsed.hostname!r}).")
+    if parsed.query:  # libpq lets ?host=... override the host checked above
+        pytest.fail("Refusing a TEST_DATABASE_URL with a query string.")
     return url
 
 

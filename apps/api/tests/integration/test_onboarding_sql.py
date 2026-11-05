@@ -68,10 +68,12 @@ def test_create_org_is_atomic_when_the_profile_insert_fails(conn: Conn, world: W
     create_org(conn, asha, "a@example.com", "First")
     conn.commit()
     orgs_before, codes_before = _count(conn, "orgs"), _count(conn, "org_join_codes")
+    conn.commit()  # leave conn idle so create_org opens a real transaction, not a savepoint
 
-    with pytest.raises(ApiError) as err:  # same user again: profile insert violates the PK
+    # same user again: profile insert violates the PK. No conn.rollback() afterwards: the
+    # service's own transaction must undo the org and code inserts, or the counts differ.
+    with pytest.raises(ApiError) as err:
         create_org(conn, asha, "a@example.com", "Second")
-    conn.rollback()
 
     assert err.value.status_code == 409
     assert _count(conn, "orgs") == orgs_before
@@ -82,9 +84,9 @@ def test_create_org_is_atomic_when_the_profile_insert_fails(conn: Conn, world: W
 def test_create_org_for_a_deleted_account_leaves_no_org(conn: Conn, world: World) -> None:
     ghost = Identity(user_id=uuid4(), email="ghost@example.com")  # no auth.users row
     before = _count(conn, "orgs")
+    conn.commit()  # leave conn idle so create_org opens a real transaction, not a savepoint
     with pytest.raises(ApiError) as err:
         create_org(conn, ghost, "ghost@example.com", "Ghosts Inc")
-    conn.rollback()
     assert err.value.status_code == 401
     assert _count(conn, "orgs") == before
 

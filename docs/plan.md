@@ -10,7 +10,7 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 - [x] 3. RLS policies as backstop (applied to the linked Supabase project)
 - [x] 4. JWT verification, `profiles` lookup, `GET /api/v1/me`
 - [x] 4b. Onboarding: `POST /onboarding` creates an org (caller is Admin) or joins one by join code (caller is Customer); `GET /org/join-code`; `require_role`. `/me` stays read-only
-- [ ] 5. Tenancy tests (cross-org 404, wrong role 403, no token 401)
+- [x] 5. Tenancy tests: two-org fixture, endpoint matrix with a completeness test (a new route without a row fails), 401/403 and `org_id`-from-client checks, real-Postgres integration tests in CI. The cross-org 404 test is wired but runs zero cases until the first ID-based route (step 6) adds a matrix row with `cross_org_404=True`
 
 ## M2 Documents and ingestion
 - [ ] 6. Upload endpoint with type and size checks, `jobs` table, claim with `SKIP LOCKED`
