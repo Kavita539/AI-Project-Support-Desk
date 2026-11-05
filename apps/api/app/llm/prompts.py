@@ -29,3 +29,29 @@ def data_block(label: str, text: str, *, nonce: str | None = None) -> str:
             raise ValueError("nonce appears in the text")
         chosen = nonce
     return f'<data id="{chosen}" source="{label}">\n{text}\n</data id="{chosen}">'
+
+
+ASK_SYSTEM = (
+    "You answer a customer's question using only the document excerpts provided. "
+    + DATA_NOTICE
+    + " Each excerpt block's source is its chunk id. If the excerpts do not contain the answer, "
+    "return an empty answer and an empty cited_chunk_ids list; never guess. Otherwise write a "
+    "short, plain answer and list in cited_chunk_ids the id of every excerpt you used. "
+    "Cite only ids that appear as a block source."
+)
+
+ASK_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "answer": {"type": "string"},
+        "cited_chunk_ids": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["answer", "cited_chunk_ids"],
+}
+
+
+def build_ask_prompt(question: str, chunks: list[tuple[str, str]]) -> str:
+    """`chunks` is (chunk id, text). Excerpts and the question are untrusted data blocks."""
+    parts = [data_block(chunk_id, text) for chunk_id, text in chunks]
+    parts.append(data_block("question", question))
+    return "\n\n".join(parts)

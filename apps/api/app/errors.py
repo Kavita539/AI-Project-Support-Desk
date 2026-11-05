@@ -5,6 +5,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.llm.base import LLMError
+
 logger = logging.getLogger(__name__)
 
 _CODES = {
@@ -40,6 +42,15 @@ def install_error_handlers(app: FastAPI) -> None:
     async def http_error(_: Request, exc: StarletteHTTPException) -> JSONResponse:
         code = _CODES.get(exc.status_code, "error")
         return JSONResponse(_body(code, str(exc.detail)), exc.status_code)
+
+    @app.exception_handler(LLMError)
+    async def llm_error(_: Request, exc: LLMError) -> JSONResponse:
+        # Fixed text for the client: never the provider's message, URL or body (AC-21).
+        logger.warning("LLM call failed: %s: %s", type(exc).__name__, exc)
+        return JSONResponse(
+            _body("llm_unavailable", "The assistant is unavailable right now. Please try again."),
+            502,
+        )
 
     @app.exception_handler(Exception)
     async def unexpected_error(_: Request, exc: Exception) -> JSONResponse:
