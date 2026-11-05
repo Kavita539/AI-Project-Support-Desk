@@ -69,7 +69,7 @@ def test_every_registered_route_is_in_the_matrix() -> None:
     registered = {
         (method, path)
         for path, methods in _registered_routes()
-        if path.startswith(PREFIX)
+        if path.startswith(f"{PREFIX}/")
         for method in methods - {"HEAD", "OPTIONS"}
     }
     in_matrix = {(r.method, r.path) for r in ROUTES}
@@ -111,7 +111,7 @@ def test_allowed_role_is_not_denied(
     client: TestClient, two_orgs: TwoOrgs, route: Route, role: str
 ) -> None:
     resp = _call(client, route, make_token(two_orgs.a.profile(role).user_id))
-    assert resp.status_code not in (401, 403)
+    assert resp.status_code < 400  # allowed means it works, not just "not denied"
 
 
 @pytest.mark.parametrize("route", [r for r in ROUTES if r.cross_org_404], ids=_id)
@@ -196,4 +196,4 @@ def test_onboarding_ignores_org_id_in_query(client: TestClient, two_orgs: TwoOrg
     )
     assert resp.status_code == 201
     assert resp.json()["org_id"] == str(two_orgs.b.org_id)
-    assert resp.json()["role"] != "admin"
+    assert resp.json()["role"] == "customer"
