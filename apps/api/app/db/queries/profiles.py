@@ -12,6 +12,17 @@ class Profile:
     email: str
 
 
+def insert_profile(
+    conn: Connection[dict[str, object]], user_id: UUID, org_id: UUID, role: str, email: str
+) -> Profile:
+    """Raises psycopg.errors.UniqueViolation if the user already has a profile."""
+    conn.execute(
+        "insert into profiles (user_id, org_id, role, email) values (%s, %s, %s, %s)",
+        (user_id, org_id, role, email),
+    )
+    return Profile(user_id, org_id, role, email)
+
+
 def get_profile(conn: Connection[dict[str, object]], user_id: UUID) -> Profile | None:
     """Look up who a verified user is. This is the one query that takes no org_id,
     because its whole job is to find the org_id the user belongs to."""

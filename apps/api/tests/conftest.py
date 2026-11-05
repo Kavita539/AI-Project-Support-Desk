@@ -1,5 +1,6 @@
 import time
 from collections.abc import Iterator
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -7,6 +8,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from psycopg.errors import UniqueViolation
 
 from app.auth import get_key_resolver
 from app.config import get_settings
@@ -34,6 +36,7 @@ def make_token(
         "aud": "authenticated",
         "iss": ISSUER,
         "exp": int(time.time()) + expires_in,
+        "email": "user@example.com",
     }
     claims.update(overrides)
     for name in drop:
@@ -46,22 +49,75 @@ def make_forged_token(user_id: UUID) -> str:
     return make_token(user_id, key=_other_key)
 
 
+class FakeConn:
+    """Stands in for a psycopg connection. Real transactions are not simulated: atomicity
+    is a property of Postgres and is checked against the live database, not here."""
+
+    def transaction(self) -> AbstractContextManager[None]:
+        return nullcontext()
+
+
 class FakeDb:
-    """Stands in for the database: a dict of user_id -> Profile."""
+    """Stands in for the database: profiles, orgs and join codes held in dicts."""
 
     def __init__(self) -> None:
         self.profiles: dict[UUID, Profile] = {}
+        self.orgs: dict[UUID, str] = {}
+        self.codes: dict[str, UUID] = {}  # code -> org_id
+        self.reject_next_codes = 0  # simulate join-code collisions
 
-    def add_profile(self, role: str = "agent") -> Profile:
-        profile = Profile(uuid4(), uuid4(), role, f"{role}@example.com")
+    def add_profile(self, role: str = "agent", org_id: UUID | None = None) -> Profile:
+        profile = Profile(uuid4(), org_id or uuid4(), role, f"{role}@example.com")
         self.profiles[profile.user_id] = profile
         return profile
+
+    def add_org(self, name: str = "Acme", code: str = "K7M2QX9P") -> UUID:
+        org_id = uuid4()
+        self.orgs[org_id] = name
+        self.codes[code] = org_id
+        return org_id
+
+    # Fakes for the functions in app.db.queries.orgs / profiles
+    def insert_org(self, _conn: object, name: str) -> UUID:
+        org_id = uuid4()
+        self.orgs[org_id] = name
+        return org_id
+
+    def insert_join_code(self, _conn: object, org_id: UUID, code: str) -> bool:
+        if self.reject_next_codes > 0:
+            self.reject_next_codes -= 1
+            return False
+        if code in self.codes:
+            return False
+        self.codes[code] = org_id
+        return True
+
+    def find_org_id_by_join_code(self, _conn: object, code: str) -> UUID | None:
+        return self.codes.get(code)
+
+    def get_join_code(self, _conn: object, org_id: UUID) -> str | None:
+        return next((c for c, o in self.codes.items() if o == org_id), None)
+
+    def insert_profile(
+        self, _conn: object, user_id: UUID, org_id: UUID, role: str, email: str
+    ) -> Profile:
+        if user_id in self.profiles:
+            raise UniqueViolation("profiles_pkey")
+        self.profiles[user_id] = Profile(user_id, org_id, role, email)
+        return self.profiles[user_id]
 
 
 @pytest.fixture
 def db(monkeypatch: pytest.MonkeyPatch) -> FakeDb:
     fake = FakeDb()
     monkeypatch.setattr("app.auth.get_profile", lambda _conn, uid: fake.profiles.get(uid))
+    monkeypatch.setattr("app.db.queries.orgs.insert_org", fake.insert_org)
+    monkeypatch.setattr("app.db.queries.orgs.insert_join_code", fake.insert_join_code)
+    monkeypatch.setattr(
+        "app.db.queries.orgs.find_org_id_by_join_code", fake.find_org_id_by_join_code
+    )
+    monkeypatch.setattr("app.db.queries.orgs.get_join_code", fake.get_join_code)
+    monkeypatch.setattr("app.services.onboarding.insert_profile", fake.insert_profile)
     return fake
 
 
@@ -84,7 +140,7 @@ def client(db: FakeDb, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("DATABASE_URL", "")  # never open a real pool in tests
     get_settings.cache_clear()
     app.dependency_overrides[get_key_resolver] = lambda: lambda _token: _private_key.public_key()
-    app.dependency_overrides[get_conn] = lambda: None
+    app.dependency_overrides[get_conn] = lambda: FakeConn()
     try:
         yield TestClient(app)
     finally:

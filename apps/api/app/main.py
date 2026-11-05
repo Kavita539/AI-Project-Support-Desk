@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db.pool import close_pool, open_pool
 from app.errors import install_error_handlers
-from app.routes import me
+from app.routes import me, onboarding, org
 
 
 @asynccontextmanager
@@ -33,6 +33,8 @@ app.add_middleware(
 )
 
 app.include_router(me.router, prefix="/api/v1")
+app.include_router(onboarding.router, prefix="/api/v1")
+app.include_router(org.router, prefix="/api/v1")
 
 
 @app.get("/api/v1/health")

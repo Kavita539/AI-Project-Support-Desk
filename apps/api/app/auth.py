@@ -1,5 +1,6 @@
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
@@ -42,8 +43,16 @@ def _unauthorized(message: str) -> ApiError:
     return ApiError(401, "unauthorized", message)
 
 
-def verify_token(token: str, resolve_key: KeyResolver) -> UUID:
-    """Return the user id (the `sub` claim) of a valid token, or raise 401."""
+@dataclass(frozen=True)
+class Identity:
+    """What a verified token proves: who the user is. Says nothing about org or role."""
+
+    user_id: UUID
+    email: str | None
+
+
+def verify_token(token: str, resolve_key: KeyResolver) -> Identity:
+    """Return the identity of a valid token (the `sub` and `email` claims), or raise 401."""
     try:
         key = resolve_key(token)
         claims = jwt.decode(
@@ -54,7 +63,8 @@ def verify_token(token: str, resolve_key: KeyResolver) -> UUID:
             issuer=get_settings().jwt_issuer,
             options={"require": ["exp", "sub"]},
         )
-        return UUID(str(claims["sub"]))
+        email = claims.get("email")
+        return Identity(UUID(str(claims["sub"])), email if isinstance(email, str) else None)
     except jwt.PyJWKClientConnectionError:
         # Our problem (Supabase unreachable or SUPABASE_URL wrong), not the user's token.
         logger.exception("Could not fetch Supabase signing keys")
@@ -63,10 +73,10 @@ def verify_token(token: str, resolve_key: KeyResolver) -> UUID:
         raise _unauthorized("Invalid or expired token.") from None
 
 
-def get_user_id(
+def get_identity(
     creds: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
     resolve_key: Annotated[KeyResolver, Depends(get_key_resolver)],
-) -> UUID:
+) -> Identity:
     """Step 1: prove who is calling. Runs before any database connection is borrowed,
     so requests with bad tokens never touch the pool."""
     if creds is None:
@@ -75,14 +85,25 @@ def get_user_id(
 
 
 def get_current_user(
-    user_id: Annotated[UUID, Depends(get_user_id)],
+    identity: Annotated[Identity, Depends(get_identity)],
     conn: Annotated[Connection[dict[str, object]], Depends(get_conn)],
 ) -> Profile:
     """Step 2: the only place org_id and role come from: the profiles row."""
-    profile = get_profile(conn, user_id)
+    profile = get_profile(conn, identity.user_id)
     if profile is None:
         raise ApiError(403, "no_profile", "This account has no profile yet.")
     return profile
 
 
 CurrentUser = Annotated[Profile, Depends(get_current_user)]
+
+
+def require_role(*roles: str) -> Callable[[Profile], Profile]:
+    """Dependency factory: allow only the given roles, otherwise 403."""
+
+    def check(user: CurrentUser) -> Profile:
+        if user.role not in roles:
+            raise ApiError(403, "forbidden", "Your role cannot do this.")
+        return user
+
+    return check
