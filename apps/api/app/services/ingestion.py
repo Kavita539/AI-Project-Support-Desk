@@ -13,6 +13,7 @@ Rules this module lives by:
 """
 
 import logging
+import math
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from uuid import UUID
@@ -25,7 +26,7 @@ from app.db.jobs import Job
 from app.db.queries import chunks as chunk_queries
 from app.db.queries import documents
 from app.db.queries.documents import Document
-from app.llm.base import EMBEDDING_DIM, Embedder, EmbeddingError, embed_in_batches
+from app.llm.base import EMBEDDING_DIM, Embedder, LLMError, embed_in_batches
 from app.services.chunking import chunk_pages
 from app.services.parsing import PermanentIngestError, parse_document
 from app.storage import Storage, StorageObjectNotFound
@@ -37,6 +38,8 @@ Borrow = Callable[[], AbstractContextManager[Conn]]
 
 JOB_TYPE = "ingest_document"
 _MAX_ERROR_CHARS = 500
+# Longest provider Retry-After we honour; stays below the 600 s stale-job sweep.
+MAX_RETRY_AFTER_SECONDS = 300
 
 MSG_CANNOT_PROCESS = "This document type cannot be processed yet."
 MSG_NO_TEXT = (
@@ -55,7 +58,9 @@ def classify(exc: BaseException) -> tuple[bool, str]:
         return False, exc.user_message
     if isinstance(exc, StorageObjectNotFound):
         return False, MSG_NOT_FOUND
-    if isinstance(exc, EmbeddingError):
+    if isinstance(exc, LLMError):
+        # MSG_PROVIDER covers every provider failure; the technical cause goes to
+        # jobs.last_error and the log only.
         return exc.retryable, MSG_PROVIDER
     return True, MSG_UNEXPECTED
 
@@ -207,6 +212,10 @@ def _record_failure(job: Job, exc: BaseException, borrow: Borrow, settings: Sett
                 )
             else:
                 delay = settings.ingest_retry_base_seconds * 4 ** (job.attempts - 1)
+                if isinstance(exc, LLMError) and exc.retry_after is not None:
+                    hint = exc.retry_after
+                    if math.isfinite(hint) and hint > 0:
+                        delay = max(delay, min(math.ceil(hint), MAX_RETRY_AFTER_SECONDS))
                 jobs.fail(
                     conn,
                     job.org_id,

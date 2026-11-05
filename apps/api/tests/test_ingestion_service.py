@@ -18,7 +18,16 @@ from app.config import Settings
 from app.db.jobs import Job
 from app.db.queries.chunks import ChunkRow
 from app.db.queries.documents import Document
-from app.llm.base import EMBEDDING_DIM, EmbeddingError
+from app.llm.base import (
+    EMBEDDING_DIM,
+    EmbeddingError,
+    LLMAuthError,
+    LLMBadRequest,
+    LLMBlocked,
+    LLMError,
+    LLMRateLimited,
+    LLMUnavailable,
+)
 from app.services import ingestion
 from app.services.chunking import TextChunk
 from app.services.chunking import chunk_pages as real_chunk_pages
@@ -470,6 +479,88 @@ def test_classify() -> None:
     assert ingestion.classify(EmbeddingError("x", retryable=True)) == (True, ingestion.MSG_PROVIDER)
     assert ingestion.classify(EmbeddingError("x", retryable=False))[0] is False
     assert ingestion.classify(ValueError("x")) == (True, ingestion.MSG_UNEXPECTED)
+
+
+def _raise_from_embed(env: Env, exc: LLMError) -> None:
+    def embed(texts: Sequence[str], *, kind: str = "document") -> list[list[float]]:
+        raise exc
+
+    env.provider.embed = embed  # type: ignore[method-assign]
+
+
+def test_classify_llm_error_family() -> None:
+    for retryable_exc in (
+        LLMRateLimited("x", retryable=True),
+        LLMUnavailable("x", retryable=True),
+    ):
+        assert ingestion.classify(retryable_exc) == (True, ingestion.MSG_PROVIDER)
+    for permanent_exc in (
+        LLMAuthError("x", retryable=False),
+        LLMBlocked("x", retryable=False),
+        LLMBadRequest("x", retryable=False),
+    ):
+        assert ingestion.classify(permanent_exc) == (False, ingestion.MSG_PROVIDER)
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected"),
+    [
+        (90.0, 90),
+        (89.2, 90),
+        (10000.0, ingestion.MAX_RETRY_AFTER_SECONDS),
+        (5.0, 30),
+        (None, 30),
+        (-10.0, 30),
+        (0.0, 30),
+        (float("nan"), 30),
+        (float("inf"), 30),
+    ],
+)
+def test_retry_after_sets_requeue_delay(env: Env, retry_after: float | None, expected: int) -> None:
+    doc = upload(env, b"text")
+    exc = LLMRateLimited("rate limited: secret-detail", retryable=True, retry_after=retry_after)
+    _raise_from_embed(env, exc)
+    job = env.world.add_job(doc.id, attempts=1)
+    env.run(job)
+    stored = env.world.doc(doc)
+    assert stored is not None and stored.status == "queued"
+    assert env.world.job_retryable[job.id] is True
+    assert env.world.job_delay[job.id] == expected
+
+
+def test_retry_after_never_shortens_later_backoff(env: Env) -> None:
+    doc = upload(env, b"text")
+    _raise_from_embed(env, LLMRateLimited("x", retryable=True, retry_after=60))
+    job = env.world.add_job(doc.id, attempts=2)
+    env.run(job)
+    assert env.world.job_delay[job.id] == 120
+
+
+def test_llm_auth_error_fails_at_once_with_fixed_message(env: Env) -> None:
+    doc = upload(env, b"text")
+    _raise_from_embed(env, LLMAuthError("bad key: secret-detail", retryable=False))
+    job = env.world.add_job(doc.id, attempts=1)
+    env.run(job)
+    stored = env.world.doc(doc)
+    assert stored is not None and stored.status == "failed"
+    assert stored.error == ingestion.MSG_PROVIDER
+    assert "secret-detail" not in (stored.error or "")
+    assert env.world.job_status[job.id] == "failed"
+    assert env.world.job_retryable[job.id] is False
+    assert env.world.job_error[job.id] == "LLMAuthError: bad key: secret-detail"
+
+
+def test_llm_unavailable_on_final_attempt_fails_document(env: Env) -> None:
+    doc = upload(env, b"text")
+    _raise_from_embed(env, LLMUnavailable("down: secret-detail", retryable=True, retry_after=60))
+    job = env.world.add_job(doc.id, attempts=3, max_attempts=3)
+    env.run(job)
+    stored = env.world.doc(doc)
+    assert stored is not None and stored.status == "failed"
+    assert stored.error == ingestion.MSG_PROVIDER
+    assert "secret-detail" not in (stored.error or "")
+    assert env.world.job_status[job.id] == "failed"
+    assert env.world.job_retryable[job.id] is False
 
 
 # ---- payload, tenancy, fencing --------------------------------------------------------------
