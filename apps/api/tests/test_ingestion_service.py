@@ -48,7 +48,7 @@ class FakeProvider:
         self.calls = 0
         self.world: World | None = None
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    def embed(self, texts: Sequence[str], *, kind: str = "document") -> list[list[float]]:
         self.calls += 1
         if self.world is not None:
             self.world.active_at_embed.append(self.world.active)

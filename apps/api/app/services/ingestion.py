@@ -25,7 +25,7 @@ from app.db.jobs import Job
 from app.db.queries import chunks as chunk_queries
 from app.db.queries import documents
 from app.db.queries.documents import Document
-from app.llm.base import EMBEDDING_DIM, EmbeddingError, LLMProvider, embed_in_batches
+from app.llm.base import EMBEDDING_DIM, Embedder, EmbeddingError, embed_in_batches
 from app.services.chunking import chunk_pages
 from app.services.parsing import PermanentIngestError, parse_document
 from app.storage import Storage, StorageObjectNotFound
@@ -79,7 +79,7 @@ def ingest_job(
     *,
     borrow: Borrow,
     storage: Storage,
-    provider: LLMProvider,
+    provider: Embedder,
     settings: Settings,
 ) -> None:
     """Run one claimed ingest job to a final state (done, retried or failed)."""
@@ -91,7 +91,7 @@ def ingest_job(
 
 
 def _run(
-    job: Job, borrow: Borrow, storage: Storage, provider: LLMProvider, settings: Settings
+    job: Job, borrow: Borrow, storage: Storage, provider: Embedder, settings: Settings
 ) -> None:
     doc = _begin(job, borrow)
     if doc is None:

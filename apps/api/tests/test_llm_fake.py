@@ -1,10 +1,24 @@
 import math
 from collections.abc import Sequence
+from typing import Any
 
 import pytest
 
 from app.config import get_settings
 from app.llm import EMBEDDING_DIM, EmbeddingError, FakeProvider, embed_in_batches, get_provider
+from app.llm.base import (
+    Embedder,
+    EmbedKind,
+    LLMAuthError,
+    LLMBadRequest,
+    LLMBlocked,
+    LLMError,
+    LLMMalformedOutput,
+    LLMProvider,
+    LLMRateLimited,
+    LLMUnavailable,
+)
+from app.llm.fake import GenerateCall
 
 
 def test_deterministic_dim_and_unit_norm() -> None:
@@ -42,7 +56,7 @@ class _Bad:
     def __init__(self, vectors: list[list[float]]) -> None:
         self.vectors = vectors
 
-    def embed(self, texts: Sequence[str]) -> list[list[float]]:
+    def embed(self, texts: Sequence[str], *, kind: EmbedKind = "document") -> list[list[float]]:
         return self.vectors
 
 
@@ -73,6 +87,116 @@ def test_retryable_flag() -> None:
     with pytest.raises(EmbeddingError) as exc:
         p.embed(["x"])
     assert exc.value.retryable is False
+
+
+def test_error_hierarchy() -> None:
+    for cls in (
+        EmbeddingError,
+        LLMRateLimited,
+        LLMUnavailable,
+        LLMBlocked,
+        LLMMalformedOutput,
+        LLMAuthError,
+        LLMBadRequest,
+    ):
+        assert issubclass(cls, LLMError)
+        assert cls("x", retryable=True).retryable is True
+
+
+def test_error_retry_after() -> None:
+    err = EmbeddingError("x", retryable=False)
+    assert err.retryable is False
+    assert err.retry_after is None
+    assert str(err) == "x"
+    assert LLMRateLimited("slow down", retryable=True, retry_after=2.5).retry_after == 2.5
+
+
+def test_fake_records_embed_kinds() -> None:
+    p = FakeProvider(fail_times=1)
+    with pytest.raises(EmbeddingError):
+        p.embed(["a"], kind="query")
+    p.embed(["a"])
+    p.embed(["a"], kind="document")
+    assert p.kinds == ["query", "document", "document"]
+
+
+def test_embed_in_batches_passes_kind() -> None:
+    p = FakeProvider()
+    embed_in_batches(p, [f"t{i}" for i in range(60)], kind="query")
+    assert p.kinds == ["query", "query"]
+    p2 = FakeProvider()
+    embed_in_batches(p2, ["a"])
+    assert p2.kinds == ["document"]
+
+
+def test_vectors_same_for_document_and_query() -> None:
+    p = FakeProvider()
+    assert p.embed(["same"], kind="document") == p.embed(["same"], kind="query")
+
+
+def test_generate_returns_queued_in_order() -> None:
+    p = FakeProvider()
+    p.queue_generate({"n": 1}, {"n": 2})
+    assert p.generate("p", {}) == {"n": 1}
+    assert p.generate("p", {}) == {"n": 2}
+
+
+def test_generate_returns_deep_copy() -> None:
+    original: dict[str, Any] = {"a": {"b": [1]}}
+    p = FakeProvider()
+    p.queue_generate(original)
+    first = p.generate("p", {})
+    first["a"]["b"].append(2)
+    assert original == {"a": {"b": [1]}}
+    p.queue_generate(original)
+    assert p.generate("p", {}) == {"a": {"b": [1]}}
+
+
+def test_generate_raises_queued_error() -> None:
+    p = FakeProvider()
+    p.queue_generate(LLMBlocked("blocked", retryable=False), LLMUnavailable("down", retryable=True))
+    with pytest.raises(LLMBlocked) as blocked:
+        p.generate("p", {})
+    assert blocked.value.retryable is False
+    with pytest.raises(LLMUnavailable) as down:
+        p.generate("p", {})
+    assert down.value.retryable is True
+
+
+def test_generate_empty_queue_asserts() -> None:
+    with pytest.raises(AssertionError, match="no scripted response"):
+        FakeProvider().generate("p", {})
+
+
+def test_generate_calls_recorded() -> None:
+    p = FakeProvider(generate_responses=[{"ok": True}])
+    schema = {"type": "object"}
+    p.generate("hello", schema, system="sys", temperature=0.5, max_output_tokens=64)
+    assert p.generate_calls == [GenerateCall("hello", schema, "sys", 0.5, 64)]
+
+
+def test_generate_calls_recorded_even_when_raising() -> None:
+    p = FakeProvider()
+    with pytest.raises(AssertionError):
+        p.generate("p", {"x": 1})
+    assert p.generate_calls[0].system is None
+    assert p.generate_calls[0].temperature == 0.2
+    assert p.generate_calls[0].max_output_tokens == 1024
+
+
+def test_constructor_generate_responses() -> None:
+    err = LLMMalformedOutput("bad json", retryable=True)
+    p = FakeProvider(0, True, [{"a": 1}, err])
+    assert p.generate("p", {}) == {"a": 1}
+    with pytest.raises(LLMMalformedOutput):
+        p.generate("p", {})
+
+
+def test_fake_satisfies_protocols() -> None:
+    provider: LLMProvider = FakeProvider()
+    embedder: Embedder = FakeProvider()
+    assert len(provider.embed(["x"])[0]) == EMBEDDING_DIM
+    assert len(embedder.embed(["x"], kind="query")) == 1
 
 
 def test_get_provider_fake_and_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
