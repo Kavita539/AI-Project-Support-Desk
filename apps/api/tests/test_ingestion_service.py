@@ -21,7 +21,9 @@ from app.db.queries.documents import Document
 from app.llm.base import EMBEDDING_DIM, EmbeddingError
 from app.services import ingestion
 from app.services.chunking import TextChunk
-from app.services.parsing import ParsedPage, PermanentIngestError
+from app.services.chunking import chunk_pages as real_chunk_pages
+from app.services.parsing import ParsedPage, PermanentIngestError, format_faq
+from app.services.parsing import parse_document as real_parse_document
 from app.storage import StorageObjectNotFound
 from tests.conftest import FakeStorage
 
@@ -350,11 +352,63 @@ def test_missing_storage_object(env: Env) -> None:
     assert env.world.job_retryable[job.id] is False
 
 
-def test_faq_or_no_path_cannot_be_processed(env: Env) -> None:
-    doc = env.world.add_doc("faq", None)
-    env.run(env.world.add_job(doc.id))
+def test_no_path_cannot_be_processed(env: Env) -> None:
+    for kind in ("faq", "pdf"):
+        doc = env.world.add_doc(kind, None)
+        env.run(env.world.add_job(doc.id))
+        stored = env.world.doc(doc)
+        assert stored is not None and stored.error == ingestion.MSG_CANNOT_PROCESS
+        assert stored.status == "failed"
+
+
+@pytest.fixture
+def real_faq_pipeline(env: Env, monkeypatch: pytest.MonkeyPatch) -> Env:
+    """Use the real parser and chunker (only storage, embeddings and the db stay fake)."""
+    monkeypatch.setattr(ingestion, "parse_document", real_parse_document)
+    monkeypatch.setattr(ingestion, "chunk_pages", real_chunk_pages)
+    return env
+
+
+def upload_faq(env: Env, question: str, answer: str) -> Document:
+    doc = env.world.add_doc("faq", "o/d/faq.txt")
+    env.storage.upload("o/d/faq.txt", format_faq(question, answer).encode(), "text/plain")
+    return doc
+
+
+def test_faq_document_reaches_ready_with_one_chunk(real_faq_pipeline: Env) -> None:
+    env = real_faq_pipeline
+    doc = upload_faq(env, "How do I reset?", "Click reset.\n\nThen wait.")
+    job = env.world.add_job(doc.id)
+    env.run(job)
     stored = env.world.doc(doc)
-    assert stored is not None and stored.error == ingestion.MSG_CANNOT_PROCESS
+    assert stored is not None and stored.status == "ready" and stored.error is None
+    chunks = env.world.chunks[doc.id]
+    assert len(chunks) == 1
+    assert chunks[0].content == "Q: How do I reset?\nA: Click reset.\n\nThen wait."
+    assert chunks[0].page is None and chunks[0].section == "How do I reset?"
+    assert env.world.job_status[job.id] == "done"
+
+
+def test_faq_reingest_leaves_one_chunk(real_faq_pipeline: Env) -> None:
+    env = real_faq_pipeline
+    doc = upload_faq(env, "Q?", "A.")
+    env.run(env.world.add_job(doc.id))
+    env.run(env.world.add_job(doc.id))
+    assert len(env.world.chunks[doc.id]) == 1
+    assert [c.position for c in env.world.chunks[doc.id]] == [0]
+
+
+def test_malformed_faq_fails_readably(real_faq_pipeline: Env) -> None:
+    env = real_faq_pipeline
+    doc = env.world.add_doc("faq", "o/d/faq.txt")
+    env.storage.upload("o/d/faq.txt", b"Q: no answer here\n", "text/plain")
+    job = env.world.add_job(doc.id)
+    env.run(job)
+    stored = env.world.doc(doc)
+    assert stored is not None and stored.status == "failed"
+    assert stored.error == "This FAQ entry is not in the expected format. Please re-create it."
+    assert env.world.job_retryable[job.id] is False
+    assert doc.id not in env.world.chunks
 
 
 def test_provider_retryable_error_then_final_attempt(env: Env) -> None:

@@ -11,9 +11,16 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
-from .conftest import FakeDb, FakeStorage, OrgFixture, TwoOrgs, make_forged_token, make_token
+from .conftest import (
+    FakeDb,
+    FakeDocs,
+    FakeStorage,
+    OrgFixture,
+    TwoOrgs,
+    make_forged_token,
+    make_token,
+)
 from .endpoint_matrix import DOC_A_ID, ROUTES, Route
-from .test_documents_upload import FakeDocs
 
 PREFIX = "/api/v1"
 ALL_ROLES = ("admin", "agent", "customer")
@@ -45,19 +52,12 @@ def _call(client: TestClient, route: Route, token: str | None) -> httpx.Response
 
 
 @pytest.fixture(autouse=True)
-def matrix_fakes(
-    storage: FakeStorage, two_orgs: TwoOrgs, monkeypatch: pytest.MonkeyPatch
-) -> FakeDocs:
-    """Fake storage and document queries, with one org A document (DOC_A_ID) seeded.
-    The fake lookup is keyed by org_id, so org B gets None for it."""
-    docs = FakeDocs()
-    monkeypatch.setattr("app.db.queries.documents.insert_document", docs.insert_document)
-    monkeypatch.setattr("app.db.queries.documents.get_document", docs.get_document)
-    monkeypatch.setattr("app.db.jobs.enqueue", docs.enqueue)
-    docs.insert_document(
-        None, two_orgs.a.org_id, UUID(DOC_A_ID), "seed.txt", "txt",
-        f"{two_orgs.a.org_id}/{DOC_A_ID}/seed.txt", 5, None, two_orgs.a.admin.user_id,
-    )  # fmt: skip
+def matrix_fakes(storage: FakeStorage, two_orgs: TwoOrgs, docs: FakeDocs) -> FakeDocs:
+    """Fake storage and document queries, with one ready org A document (DOC_A_ID) seeded.
+    The fake lookups are keyed by org_id, so org B gets None for it. Note the matrix runs
+    the owner first, so a DELETE row's 404 for org B is weak; test_documents_manage.py has
+    the dedicated cross-org tests that check nothing was deleted."""
+    docs.seed(two_orgs.a.org_id, doc_id=UUID(DOC_A_ID))
     return docs
 
 

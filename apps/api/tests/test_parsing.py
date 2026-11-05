@@ -3,7 +3,7 @@ from io import BytesIO
 import pytest
 from pypdf import PdfWriter
 
-from app.services.parsing import PermanentIngestError, _clean, parse_document
+from app.services.parsing import PermanentIngestError, _clean, format_faq, parse_document
 
 CORRUPT = "This PDF could not be read. It may be damaged or protected. Please upload a valid copy."
 NO_TEXT = (
@@ -126,9 +126,66 @@ def test_empty_txt() -> None:
     assert err("txt", b"\n \x00 ") == NO_TEXT
 
 
-@pytest.mark.parametrize("kind", ["faq", "docx", ""])
+@pytest.mark.parametrize("kind", ["docx", ""])
 def test_unsupported_kind(kind: str) -> None:
     assert err(kind, b"x") == "This document type cannot be processed yet."
+
+
+FAQ_BAD = "This FAQ entry is not in the expected format. Please re-create it."
+
+
+def test_faq_round_trip() -> None:
+    raw = format_faq("  How do I reset?  ", "  Click reset.\nThen wait. ").encode()
+    pages = parse_document("faq", raw)
+    assert len(pages) == 1
+    assert pages[0].page is None
+    assert pages[0].text == "Q: How do I reset?\nA: Click reset.\nThen wait."
+    assert pages[0].section == "How do I reset?"
+
+
+def test_faq_newline_in_question_collapsed() -> None:
+    formatted = format_faq("line one\n\n  line   two\r\nthree", "ans")
+    assert formatted == "Q: line one line two three\nA: ans\n"
+    assert parse_document("faq", formatted.encode())[0].section == "line one line two three"
+
+
+def test_faq_question_containing_a_marker_still_parses() -> None:
+    q = "What does A: mean? and \\nA: odd"
+    pages = parse_document("faq", format_faq(q, "It means answer.").encode())
+    assert pages[0].text == f"Q: {q}\nA: It means answer."
+
+
+def test_faq_answer_containing_a_marker_keeps_all_of_it() -> None:
+    pages = parse_document("faq", format_faq("Q1?", "first\nA: second").encode())
+    assert pages[0].text == "Q: Q1?\nA: first\nA: second"
+
+
+def test_faq_section_truncated_to_200() -> None:
+    pages = parse_document("faq", format_faq("x" * 300, "ans").encode())
+    assert pages[0].section == "x" * 200
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"Q: only a question\n",
+        b"Q: question\nA: \n",
+        b"Q: question\nA:no space\n",
+        b"Q: \nA: answer\n",
+        b"A: answer\nQ: question\n",
+        b"just some text",
+        b"",
+    ],
+)
+def test_faq_malformed_gets_fixed_message(data: bytes) -> None:
+    assert err("faq", data) == FAQ_BAD
+
+
+def test_faq_invalid_utf8_is_readable_and_leaks_nothing() -> None:
+    message = err("faq", b"Q: q\nA: \xff\xfe")
+    assert message == "This file is not valid UTF-8 text."
+    for banned in ("codec", "byte", "position", "Traceback"):
+        assert banned not in message
 
 
 def test_markdown_bom_is_dropped_so_first_heading_survives() -> None:

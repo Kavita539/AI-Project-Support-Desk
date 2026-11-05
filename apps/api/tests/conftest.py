@@ -1,7 +1,8 @@
 import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -13,7 +14,9 @@ from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
 from app.auth import get_key_resolver
 from app.config import get_settings
+from app.db.jobs import Job
 from app.db.pool import get_conn
+from app.db.queries.documents import Document
 from app.db.queries.profiles import Profile
 from app.errors import ApiError
 from app.main import app
@@ -151,6 +154,145 @@ class FakeStorage:
         if path not in self.objects:
             raise StorageObjectNotFound(path)
         return self.objects[path][0]
+
+
+@dataclass
+class FakeJob:
+    org_id: UUID
+    type: str
+    payload: dict[str, object]
+    status: str = "queued"
+
+
+class FakeDocs:
+    """Stands in for app.db.queries.documents and the job functions in app.db.jobs."""
+
+    def __init__(self) -> None:
+        self.docs: dict[UUID, Document] = {}
+        self.jobs: list[FakeJob] = []
+        self.fail_insert = False
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in (
+            "insert_document",
+            "get_document",
+            "get_document_for_update",
+            "list_documents",
+            "count_documents",
+            "delete_document",
+            "mark_queued",
+        ):
+            monkeypatch.setattr(f"app.db.queries.documents.{name}", getattr(self, name))
+        monkeypatch.setattr("app.db.jobs.enqueue", self.enqueue)
+        monkeypatch.setattr("app.db.jobs.delete_queued_ingest_jobs", self.delete_queued_ingest_jobs)
+
+    def seed(
+        self,
+        org_id: UUID,
+        *,
+        name: str = "seed.txt",
+        kind: str = "txt",
+        status: str = "ready",
+        error: str | None = None,
+        storage_path: str | None | bool = True,
+        created_at: datetime | None = None,
+        doc_id: UUID | None = None,
+    ) -> Document:
+        """Add a document directly. storage_path True means a default path, None means none."""
+        doc_id = doc_id or uuid4()
+        path = f"{org_id}/{doc_id}/{name}" if storage_path is True else storage_path
+        assert path is None or isinstance(path, str)
+        doc = Document(
+            doc_id, org_id, name, kind, path, status, error, None, 5, None,
+            created_at or datetime.now(UTC),
+        )  # fmt: skip
+        self.docs[doc_id] = doc
+        return doc
+
+    def queued_jobs(self, doc_id: UUID) -> list[FakeJob]:
+        return [j for j in self.jobs if j.payload.get("document_id") == str(doc_id)]
+
+    def insert_document(
+        self,
+        _conn: object,
+        org_id: UUID,
+        doc_id: UUID,
+        name: str,
+        kind: str,
+        storage_path: str | None,
+        size_bytes: int | None,
+        page_count: int | None,
+        created_by: UUID | None,
+    ) -> Document:
+        if self.fail_insert:
+            raise RuntimeError("db down")
+        doc = Document(
+            doc_id, org_id, name, kind, storage_path, "queued", None, page_count,
+            size_bytes, created_by, datetime.now(UTC),
+        )  # fmt: skip
+        self.docs[doc_id] = doc
+        return doc
+
+    def get_document(self, _conn: object, org_id: UUID, doc_id: UUID) -> Document | None:
+        doc = self.docs.get(doc_id)
+        return doc if doc and doc.org_id == org_id else None
+
+    get_document_for_update = get_document
+
+    def list_documents(
+        self, _conn: object, org_id: UUID, limit: int, offset: int
+    ) -> list[Document]:
+        mine = [d for d in self.docs.values() if d.org_id == org_id]
+        mine.sort(key=lambda d: (d.created_at, str(d.id)), reverse=True)
+        return mine[offset : offset + limit]
+
+    def count_documents(self, _conn: object, org_id: UUID) -> int:
+        return sum(1 for d in self.docs.values() if d.org_id == org_id)
+
+    def delete_document(self, _conn: object, org_id: UUID, doc_id: UUID) -> bool:
+        if self.get_document(None, org_id, doc_id) is None:
+            return False
+        del self.docs[doc_id]
+        return True
+
+    def mark_queued(self, _conn: object, org_id: UUID, doc_id: UUID) -> bool:
+        doc = self.get_document(None, org_id, doc_id)
+        if doc is None:
+            return False
+        self.docs[doc_id] = replace(doc, status="queued", error=None)
+        return True
+
+    def enqueue(
+        self,
+        _conn: object,
+        org_id: UUID,
+        job_type: str,
+        payload: dict[str, object],
+        run_after: object = None,
+    ) -> Job:
+        self.jobs.append(FakeJob(org_id, job_type, payload))
+        now = datetime.now(UTC)
+        return Job(uuid4(), org_id, job_type, payload, "queued", 0, 3, now, None, None, now)
+
+    def delete_queued_ingest_jobs(self, _conn: object, org_id: UUID, doc_id: UUID) -> int:
+        def doomed(j: FakeJob) -> bool:
+            return (
+                j.org_id == org_id
+                and j.type == "ingest_document"
+                and j.status == "queued"
+                and j.payload.get("document_id") == str(doc_id)
+            )
+
+        before = len(self.jobs)
+        self.jobs = [j for j in self.jobs if not doomed(j)]
+        return before - len(self.jobs)
+
+
+@pytest.fixture
+def docs(monkeypatch: pytest.MonkeyPatch) -> FakeDocs:
+    fake = FakeDocs()
+    fake.install(monkeypatch)
+    return fake
 
 
 @pytest.fixture(autouse=True)

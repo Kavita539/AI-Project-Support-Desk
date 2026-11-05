@@ -1,5 +1,6 @@
 import logging
 import re
+from dataclasses import replace
 from io import BytesIO
 from typing import BinaryIO
 from uuid import UUID, uuid4
@@ -12,6 +13,7 @@ from app.db.queries import documents as queries
 from app.db.queries.documents import Document
 from app.db.queries.profiles import Profile
 from app.errors import ApiError
+from app.services.parsing import format_faq
 from app.storage import Storage
 
 logger = logging.getLogger(__name__)
@@ -100,14 +102,34 @@ def upload_document(
 
     doc_id: UUID = uuid4()
     path = f"{profile.org_id}/{doc_id}/{safe_name}"
-    storage.upload(path, data, _CONTENT_TYPES[kind])
+    return _store_and_queue(
+        conn, storage, profile, doc_id, safe_name, kind, path, data, _CONTENT_TYPES[kind],
+        page_count,
+    )  # fmt: skip
+
+
+def _store_and_queue(
+    conn: Connection[dict[str, object]],
+    storage: Storage,
+    profile: Profile,
+    doc_id: UUID,
+    name: str,
+    kind: str,
+    path: str,
+    data: bytes,
+    content_type: str,
+    page_count: int | None,
+) -> Document:
+    """Storage upload first, then the row and the ingest job in one transaction. If the
+    database part fails the uploaded object is removed again."""
+    storage.upload(path, data, content_type)
     try:
         with conn.transaction():
             doc = queries.insert_document(
                 conn,
                 profile.org_id,
                 doc_id,
-                safe_name,
+                name,
                 kind,
                 path,
                 len(data),
@@ -126,6 +148,78 @@ def upload_document(
             logger.warning("Could not delete orphaned object %s", path, exc_info=True)
         raise
     return doc
+
+
+def create_faq(
+    conn: Connection[dict[str, object]],
+    storage: Storage,
+    profile: Profile,
+    question: str,
+    answer: str,
+) -> Document:
+    """Store a question/answer pair as a 'faq' document and queue it for ingestion, the same
+    way as an uploaded file. The caller has already validated lengths."""
+    doc_id: UUID = uuid4()
+    path = f"{profile.org_id}/{doc_id}/faq.txt"
+    data = format_faq(question, answer).encode("utf-8")
+    name = " ".join(question.split())[:_NAME_MAX]
+    return _store_and_queue(
+        conn, storage, profile, doc_id, name, "faq", path, data, "text/plain", None
+    )
+
+
+def list_documents(
+    conn: Connection[dict[str, object]], profile: Profile, limit: int, offset: int
+) -> tuple[list[Document], int]:
+    """One page of this org's documents, newest first, and the org's total."""
+    items = queries.list_documents(conn, profile.org_id, limit, offset)
+    return items, queries.count_documents(conn, profile.org_id)
+
+
+def reprocess_document(
+    conn: Connection[dict[str, object]], profile: Profile, doc_id: UUID
+) -> Document:
+    """Queue a ready or failed document for ingestion again. The row lock makes two
+    concurrent requests serialise, so only one of them can queue a job."""
+    with conn.transaction():
+        doc = queries.get_document_for_update(conn, profile.org_id, doc_id)
+        if doc is None:
+            raise ApiError(404, "not_found", "Document not found.")
+        if doc.storage_path is None:
+            raise ApiError(
+                409, "not_reprocessable", "This document has no stored file to process again."
+            )
+        if doc.status in ("queued", "processing"):
+            raise ApiError(
+                409, "already_processing", "This document is already waiting to be processed."
+            )
+        queries.mark_queued(conn, profile.org_id, doc_id)
+        jobs.enqueue(conn, profile.org_id, "ingest_document", {"document_id": str(doc_id)})
+    conn.commit()
+    return replace(doc, status="queued", error=None)
+
+
+def delete_document(
+    conn: Connection[dict[str, object]], storage: Storage, profile: Profile, doc_id: UUID
+) -> None:
+    """Delete the document, its chunks, its queued ingest jobs and its stored file.
+
+    The file goes first: if Storage fails the ApiError propagates and the row is kept, so
+    the admin can retry. Known window: if the database step fails after Storage succeeded,
+    the row points at a missing file; a retry succeeds because deleting a missing object is
+    treated as success. A job that is already running finishes quietly if the worker has
+    already downloaded the file; if it has not, the download fails and that job ends 'failed'
+    (harmless: the document is gone and no chunks are written).
+    """
+    with conn.transaction():
+        doc = queries.get_document_for_update(conn, profile.org_id, doc_id)
+        if doc is None:
+            raise ApiError(404, "not_found", "Document not found.")
+        if doc.storage_path is not None:
+            storage.delete(doc.storage_path)
+        jobs.delete_queued_ingest_jobs(conn, profile.org_id, doc_id)
+        queries.delete_document(conn, profile.org_id, doc_id)
+    conn.commit()
 
 
 def get_document(conn: Connection[dict[str, object]], profile: Profile, doc_id: UUID) -> Document:

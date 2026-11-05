@@ -66,6 +66,28 @@ def test_delete_tolerates_missing_object(monkeypatch: pytest.MonkeyPatch) -> Non
     store.delete("a/b/c.txt")
 
 
+def test_delete_400_with_not_found_body_is_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = {"statusCode": "404", "error": "not_found", "message": "Object not found"}
+    store = make(httpx.MockTransport(lambda r: httpx.Response(400, json=body)), monkeypatch)
+    store.delete("a/b/c.txt")
+
+
+@pytest.mark.parametrize("body", [{"statusCode": 404}, {"error": "not_found"}])
+def test_delete_400_with_either_not_found_marker_is_success(
+    body: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = make(httpx.MockTransport(lambda r: httpx.Response(400, json=body)), monkeypatch)
+    store.delete("a/b/c.txt")
+
+
+def test_delete_other_400_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = {"statusCode": "400", "error": "invalid_request", "message": "Bad request"}
+    store = make(httpx.MockTransport(lambda r: httpx.Response(400, json=body)), monkeypatch)
+    with pytest.raises(ApiError) as exc:
+        store.delete("a/b/c.txt")
+    assert exc.value.status_code == 502 and exc.value.code == "storage_error"
+
+
 def test_delete_failure_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
     store = make(httpx.MockTransport(lambda r: httpx.Response(500)), monkeypatch)
     with pytest.raises(ApiError):

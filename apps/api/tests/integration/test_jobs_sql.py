@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -41,6 +41,45 @@ def test_enqueue_stores_a_queued_job(conn: Conn, world: World, clean_jobs: None)
     assert job.payload == {"document_id": "abc"}
     assert (job.status, job.attempts, job.max_attempts) == ("queued", 0, 3)
     assert job.locked_at is None and job.last_error is None
+
+
+def test_delete_queued_ingest_jobs_only_removes_queued_jobs_of_that_doc_and_org(
+    conn: Conn, world: World, clean_jobs: None
+) -> None:
+    org, other = world.make_org("A"), world.make_org("B")
+    doc, other_doc = uuid4(), uuid4()
+    payload: dict[str, object] = {"document_id": str(doc)}
+    q1 = jobs.enqueue(conn, org, "ingest_document", payload)
+    q2 = jobs.enqueue(conn, org, "ingest_document", payload)
+    running = jobs.enqueue(conn, org, "ingest_document", payload)
+    done = jobs.enqueue(conn, org, "ingest_document", payload)
+    failed = jobs.enqueue(conn, org, "ingest_document", payload)
+    other_doc_job = jobs.enqueue(conn, org, "ingest_document", {"document_id": str(other_doc)})
+    other_type = jobs.enqueue(conn, org, "triage_ticket", payload)
+    other_org_job = jobs.enqueue(conn, other, "ingest_document", payload)
+    conn.execute("update jobs set status = 'running' where id = %s", (running.id,))
+    conn.execute("update jobs set status = 'done' where id = %s", (done.id,))
+    conn.execute("update jobs set status = 'failed' where id = %s", (failed.id,))
+    conn.commit()
+
+    assert jobs.delete_queued_ingest_jobs(conn, org, doc) == 2
+    conn.commit()
+
+    survivors = {
+        r["id"]
+        for r in conn.execute("select id from jobs where org_id = any(%s)", (world.org_ids,))
+    }
+    assert q1.id not in survivors and q2.id not in survivors
+    assert survivors == {
+        running.id,
+        done.id,
+        failed.id,
+        other_doc_job.id,
+        other_type.id,
+        other_org_job.id,
+    }
+    assert jobs.delete_queued_ingest_jobs(conn, org, doc) == 0  # nothing left to delete
+    conn.commit()
 
 
 def test_claim_next_runs_the_job_once(conn: Conn, world: World, clean_jobs: None) -> None:

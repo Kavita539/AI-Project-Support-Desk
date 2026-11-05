@@ -69,7 +69,11 @@ class SupabaseStorage:
             logger.exception("Storage delete failed")
             raise _storage_error() from None
         # A missing object is fine: delete is used for cleanup and must be repeatable.
-        if res.status_code >= 300 and res.status_code != 404:
+        # Supabase Storage reports a missing object as 400 with statusCode "404".
+        gone = res.status_code == 404 or (
+            res.status_code == 400 and _body_says_not_found(res.content)
+        )
+        if res.status_code >= 300 and not gone:
             logger.error("Storage delete rejected: status %s", res.status_code)
             raise _storage_error()
 

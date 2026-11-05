@@ -97,7 +97,7 @@ def _run(
     if doc is None:
         return
 
-    if doc.storage_path is None or doc.kind == "faq":
+    if doc.storage_path is None:
         raise PermanentIngestError(MSG_CANNOT_PROCESS)
 
     # Slow work: no database connection is held from here until finalize.

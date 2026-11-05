@@ -17,6 +17,10 @@ _NO_TEXT = (
 )
 _NOT_UTF8 = "This file is not valid UTF-8 text."
 _UNSUPPORTED = "This document type cannot be processed yet."
+_FAQ_MALFORMED = "This FAQ entry is not in the expected format. Please re-create it."
+
+FAQ_QUESTION_MAX = 300
+FAQ_ANSWER_MAX = 2400
 
 _HEADING = re.compile(r"^#{1,6}\s+(\S.*?)\s*#*\s*$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
@@ -121,6 +125,22 @@ def _parse_txt(data: bytes) -> list[ParsedPage]:
     return [ParsedPage(page=None, text=text, section=None)]
 
 
+def format_faq(question: str, answer: str) -> str:
+    """The stored FAQ file format: a single-line question, then the answer."""
+    question = " ".join(question.split())
+    return f"Q: {question}\nA: {answer.strip()}\n"
+
+
+def _parse_faq(data: bytes) -> list[ParsedPage]:
+    text = _clean(_decode(data))
+    head, sep, answer = text.partition("\nA: ")
+    question = head[3:].strip() if head.startswith("Q: ") else ""
+    answer = answer.strip()
+    if not sep or not question or not answer:
+        raise PermanentIngestError(_FAQ_MALFORMED)
+    return [ParsedPage(page=None, text=f"Q: {question}\nA: {answer}", section=question[:200])]
+
+
 def parse_document(
     kind: str,
     data: bytes,
@@ -135,4 +155,6 @@ def parse_document(
         return _parse_md(data)
     if kind == "txt":
         return _parse_txt(data)
+    if kind == "faq":
+        return _parse_faq(data)
     raise PermanentIngestError(_UNSUPPORTED)

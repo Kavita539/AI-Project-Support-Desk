@@ -79,6 +79,48 @@ def get_document(
     return None if row is None else _to_document(row)
 
 
+def list_documents(
+    conn: Connection[dict[str, object]], org_id: UUID, limit: int, offset: int
+) -> list[Document]:
+    """One page of this org's documents, newest first (id breaks created_at ties)."""
+    rows = conn.execute(
+        f"select {_COLUMNS} from documents where org_id = %s "
+        "order by created_at desc, id desc limit %s offset %s",
+        (org_id, limit, offset),
+    ).fetchall()
+    return [_to_document(r) for r in rows]
+
+
+def count_documents(conn: Connection[dict[str, object]], org_id: UUID) -> int:
+    """Total documents in this org."""
+    row = conn.execute(
+        "select count(*) as n from documents where org_id = %s", (org_id,)
+    ).fetchone()
+    assert row is not None
+    return int(str(row["n"]))
+
+
+def get_document_for_update(
+    conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID
+) -> Document | None:
+    """Like get_document but row-locks the document until the caller's transaction ends."""
+    row = conn.execute(
+        f"select {_COLUMNS} from documents where id = %s and org_id = %s for update",
+        (doc_id, org_id),
+    ).fetchone()
+    return None if row is None else _to_document(row)
+
+
+def delete_document(conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID) -> bool:
+    """Delete the document; its chunks go via ON DELETE CASCADE. False if no such document
+    in this org. The caller owns the transaction."""
+    cur = conn.execute(
+        "delete from documents where id = %s and org_id = %s",
+        (doc_id, org_id),
+    )
+    return cur.rowcount == 1
+
+
 def mark_processing(conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID) -> bool:
     """status 'processing', error cleared. False if no such document in this org."""
     cur = conn.execute(
