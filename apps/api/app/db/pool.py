@@ -1,5 +1,7 @@
 from collections.abc import Iterator
+from typing import Annotated
 
+from fastapi import Depends
 from psycopg import Connection
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool, PoolTimeout
@@ -39,3 +41,10 @@ def get_conn() -> Iterator[Connection[dict[str, object]]]:
             yield conn
     except PoolTimeout:
         raise ApiError(503, "db_unavailable", "Database is busy, try again.") from None
+
+
+# Use this type in routes and dependencies instead of Depends(get_conn) directly.
+# scope="function" makes FastAPI return the connection (which commits any open
+# transaction) BEFORE the response is sent. The default would commit after the client
+# already received a 201, so an immediate follow-up request could miss the new row.
+Conn = Annotated[Connection[dict[str, object]], Depends(get_conn, scope="function")]

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from psycopg import Connection
-from psycopg.errors import UniqueViolation
+from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
 from app.auth import Identity
 from app.db.queries import orgs
@@ -38,6 +38,11 @@ def _already_onboarded() -> ApiError:
     return ApiError(409, "already_onboarded", "This account already belongs to an org.")
 
 
+def _account_gone() -> ApiError:
+    # profiles.user_id references auth.users: a valid token for a deleted user hits this.
+    return ApiError(401, "unauthorized", "This account no longer exists.")
+
+
 def create_org(
     conn: Connection[dict[str, object]], who: Identity, email: str, name: str
 ) -> Onboarded:
@@ -53,20 +58,27 @@ def create_org(
             raise ApiError(503, "try_again", "Could not create the org, please retry.")
     except UniqueViolation:
         raise _already_onboarded() from None
+    except ForeignKeyViolation:
+        raise _account_gone() from None
 
 
 def join_org(
     conn: Connection[dict[str, object]], who: Identity, email: str, join_code: str
 ) -> Onboarded:
     """The caller joins the org the code belongs to, always as a Customer."""
-    org_id = orgs.find_org_id_by_join_code(conn, normalize_join_code(join_code))
-    if org_id is None:
-        raise ApiError(404, "invalid_join_code", "That join code is not valid.")
     try:
+        # The lookup runs inside the transaction on purpose. A query before
+        # conn.transaction() would leave the connection mid-transaction, and psycopg
+        # would then use a savepoint instead of a real BEGIN/COMMIT.
         with conn.transaction():
+            org_id = orgs.find_org_id_by_join_code(conn, normalize_join_code(join_code))
+            if org_id is None:
+                raise ApiError(404, "invalid_join_code", "That join code is not valid.")
             profile = insert_profile(conn, who.user_id, org_id, "customer", email)
     except UniqueViolation:
         raise _already_onboarded() from None
+    except ForeignKeyViolation:
+        raise _account_gone() from None
     return Onboarded(profile, None)
 
 

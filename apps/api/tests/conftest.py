@@ -8,7 +8,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
-from psycopg.errors import UniqueViolation
+from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
 from app.auth import get_key_resolver
 from app.config import get_settings
@@ -65,6 +65,7 @@ class FakeDb:
         self.orgs: dict[UUID, str] = {}
         self.codes: dict[str, UUID] = {}  # code -> org_id
         self.reject_next_codes = 0  # simulate join-code collisions
+        self.deleted_users: set[UUID] = set()  # valid tokens whose auth.users row is gone
 
     def add_profile(self, role: str = "agent", org_id: UUID | None = None) -> Profile:
         profile = Profile(uuid4(), org_id or uuid4(), role, f"{role}@example.com")
@@ -101,6 +102,8 @@ class FakeDb:
     def insert_profile(
         self, _conn: object, user_id: UUID, org_id: UUID, role: str, email: str
     ) -> Profile:
+        if user_id in self.deleted_users:
+            raise ForeignKeyViolation("profiles_user_id_fkey")
         if user_id in self.profiles:
             raise UniqueViolation("profiles_pkey")
         self.profiles[user_id] = Profile(user_id, org_id, role, email)

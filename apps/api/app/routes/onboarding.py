@@ -1,18 +1,23 @@
 from typing import Annotated, Self
 
 from fastapi import APIRouter, Depends
-from psycopg import Connection
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.auth import Identity, get_identity
-from app.db.pool import get_conn
+from app.db.pool import Conn
 from app.errors import ApiError
 from app.routes.me import MeResponse
 from app.services import onboarding
 
 router = APIRouter()
 
-OrgName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=80)]
+# No control characters: NUL makes Postgres fail with a 500, and newlines/tabs are junk in a name.
+OrgName = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=80, pattern=r"^[^\x00-\x1f\x7f]+$"
+    ),
+]
 JoinCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)]
 
 
@@ -38,7 +43,7 @@ class OnboardingResponse(MeResponse):
 def onboard(
     body: OnboardingRequest,
     who: Annotated[Identity, Depends(get_identity)],
-    conn: Annotated[Connection[dict[str, object]], Depends(get_conn)],
+    conn: Conn,
 ) -> OnboardingResponse:
     if who.email is None:
         raise ApiError(400, "email_required", "Your login has no email address.")

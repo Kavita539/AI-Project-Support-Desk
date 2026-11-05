@@ -9,10 +9,9 @@ import jwt
 from fastapi import Depends
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
-from psycopg import Connection
 
 from app.config import get_settings
-from app.db.pool import get_conn
+from app.db.pool import Conn
 from app.db.queries.profiles import Profile, get_profile
 from app.errors import ApiError
 
@@ -86,7 +85,7 @@ def get_identity(
 
 def get_current_user(
     identity: Annotated[Identity, Depends(get_identity)],
-    conn: Annotated[Connection[dict[str, object]], Depends(get_conn)],
+    conn: Conn,
 ) -> Profile:
     """Step 2: the only place org_id and role come from: the profiles row."""
     profile = get_profile(conn, identity.user_id)

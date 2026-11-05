@@ -124,6 +124,10 @@ def test_joining_never_grants_a_privileged_role(client: TestClient, db: FakeDb) 
         {"org_name": ""},
         {"org_name": "   "},
         {"org_name": "x" * 81},
+        {"org_name": "a\u0000b"},
+        {"org_name": "line1\nline2"},
+        {"org_name": "tab\there"},
+        {"org_name": "\t"},
         {"join_code": ""},
     ],
 )
@@ -180,9 +184,10 @@ def test_join_code_endpoint_needs_a_token_and_a_profile(client: TestClient) -> N
 
 def test_admin_only_sees_their_own_orgs_code(client: TestClient, db: FakeDb) -> None:
     acme_admin, other_admin = uuid4(), uuid4()
-    onboard(client, acme_admin, {"org_name": "Acme"})
+    acme = onboard(client, acme_admin, {"org_name": "Acme"}).json()
     other = onboard(client, other_admin, {"org_name": "Other"}).json()
     res = client.get("/api/v1/org/join-code", headers=auth(make_token(acme_admin)))
+    assert res.json()["join_code"] == acme["join_code"]
     assert res.json()["join_code"] != other["join_code"]
 
 
@@ -198,3 +203,50 @@ def test_new_join_codes_are_random_and_readable() -> None:
 def test_normalize_and_format_round_trip() -> None:
     assert normalize_join_code("k7m2-qx9p") == "K7M2QX9P"
     assert format_join_code("K7M2QX9P") == "K7M2-QX9P"
+
+
+# --- gaps found in code review ---
+
+
+@pytest.mark.parametrize("role", ["admin", "agent", "customer"])
+def test_user_with_a_profile_cannot_join_another_org(
+    client: TestClient, db: FakeDb, role: str
+) -> None:
+    db.add_org(code="K7M2QX9P")
+    existing = db.add_profile(role)
+    res = onboard(client, existing.user_id, {"join_code": "K7M2QX9P"})
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "already_onboarded"
+    assert db.profiles[existing.user_id].org_id == existing.org_id
+    assert db.profiles[existing.user_id].role == role
+
+
+@pytest.mark.parametrize("role", ["admin", "agent", "customer"])
+def test_user_with_a_profile_cannot_create_another_org(
+    client: TestClient, db: FakeDb, role: str
+) -> None:
+    existing = db.add_profile(role)
+    res = onboard(client, existing.user_id, {"org_name": "Sneaky"})
+    assert res.status_code == 409
+    assert db.profiles[existing.user_id].role == role
+
+
+def test_deleted_account_gets_401_when_creating_an_org(client: TestClient, db: FakeDb) -> None:
+    ghost = uuid4()
+    db.deleted_users.add(ghost)
+    res = onboard(client, ghost, {"org_name": "Acme"})
+    assert res.status_code == 401
+    assert res.json()["error"]["code"] == "unauthorized"
+
+
+def test_deleted_account_gets_401_when_joining(client: TestClient, db: FakeDb) -> None:
+    db.add_org(code="K7M2QX9P")
+    ghost = uuid4()
+    db.deleted_users.add(ghost)
+    assert onboard(client, ghost, {"join_code": "K7M2QX9P"}).status_code == 401
+
+
+def test_generated_codes_match_the_database_check_constraint() -> None:
+    # Keep in sync with supabase/migrations/20261105000002_org_join_codes_hardening.sql
+    shape = re.compile(r"^[A-HJ-NP-Z2-9]{8}$")
+    assert all(shape.match(new_join_code()) for _ in range(500))
