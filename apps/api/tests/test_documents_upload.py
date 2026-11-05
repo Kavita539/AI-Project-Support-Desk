@@ -1,5 +1,4 @@
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from io import BytesIO
 from uuid import UUID, uuid4
 
@@ -8,68 +7,11 @@ from fastapi.testclient import TestClient
 from httpx import Response
 from pypdf import PdfWriter
 
-from app.db.jobs import Job
-from app.db.queries.documents import Document
 from app.main import app
 from app.services.documents import MAX_BYTES, read_limited
-from tests.conftest import FakeStorage, TwoOrgs, make_token
+from tests.conftest import FakeDocs, FakeStorage, TwoOrgs, make_token
 
 URL = "/api/v1/documents"
-
-
-class FakeDocs:
-    """Stands in for app.db.queries.documents and app.db.jobs."""
-
-    def __init__(self) -> None:
-        self.docs: dict[UUID, Document] = {}
-        self.jobs: list[tuple[UUID, str, dict[str, object]]] = []
-        self.fail_insert = False
-
-    def insert_document(
-        self,
-        _conn: object,
-        org_id: UUID,
-        doc_id: UUID,
-        name: str,
-        kind: str,
-        storage_path: str,
-        size_bytes: int,
-        page_count: int | None,
-        created_by: UUID,
-    ) -> Document:
-        if self.fail_insert:
-            raise RuntimeError("db down")
-        doc = Document(
-            doc_id, org_id, name, kind, storage_path, "pending", None, page_count,
-            size_bytes, created_by, datetime.now(UTC),
-        )  # fmt: skip
-        self.docs[doc_id] = doc
-        return doc
-
-    def get_document(self, _conn: object, org_id: UUID, doc_id: UUID) -> Document | None:
-        doc = self.docs.get(doc_id)
-        return doc if doc and doc.org_id == org_id else None
-
-    def enqueue(
-        self,
-        _conn: object,
-        org_id: UUID,
-        job_type: str,
-        payload: dict[str, object],
-        run_after: object = None,
-    ) -> Job:
-        self.jobs.append((org_id, job_type, payload))
-        now = datetime.now(UTC)
-        return Job(uuid4(), org_id, job_type, payload, "queued", 0, 3, now, None, None, now)
-
-
-@pytest.fixture
-def docs(monkeypatch: pytest.MonkeyPatch) -> FakeDocs:
-    fake = FakeDocs()
-    monkeypatch.setattr("app.db.queries.documents.insert_document", fake.insert_document)
-    monkeypatch.setattr("app.db.queries.documents.get_document", fake.get_document)
-    monkeypatch.setattr("app.db.jobs.enqueue", fake.enqueue)
-    return fake
 
 
 def pdf_bytes(pages: int = 1) -> bytes:
@@ -134,12 +76,14 @@ def test_admin_uploads_each_type(
     assert body["kind"] == kind
     assert body["page_count"] == pages
     assert body["size_bytes"] == len(content)
-    assert body["status"] == "pending"
+    assert body["status"] == "queued"
     assert "storage_path" not in body
     doc = docs.docs[UUID(body["id"])]
     assert doc.storage_path in storage.objects
     assert storage.objects[doc.storage_path][0] == content
-    assert docs.jobs == [(two_orgs.a.org_id, "ingest_document", {"document_id": body["id"]})]
+    assert [(j.org_id, j.type, j.payload) for j in docs.jobs] == [
+        (two_orgs.a.org_id, "ingest_document", {"document_id": body["id"]})
+    ]
 
 
 def test_org_and_creator_come_from_the_token_not_the_request(
