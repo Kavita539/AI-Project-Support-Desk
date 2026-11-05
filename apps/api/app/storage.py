@@ -1,3 +1,4 @@
+import json
 import logging
 from functools import lru_cache
 from typing import Protocol
@@ -11,12 +12,21 @@ from app.errors import ApiError
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 30.0
+# Same as the upload limit (app.services.documents.MAX_BYTES). Duplicated because that
+# module imports this one.
+_MAX_DOWNLOAD = 10 * 1024 * 1024
 
 
 class Storage(Protocol):
     def upload(self, path: str, data: bytes, content_type: str) -> None: ...
 
     def delete(self, path: str) -> None: ...
+
+    def download(self, path: str) -> bytes: ...
+
+
+class StorageObjectNotFound(Exception):
+    """The object is not in the bucket (deleted or never uploaded)."""
 
 
 def _storage_error() -> ApiError:
@@ -62,6 +72,45 @@ class SupabaseStorage:
         if res.status_code >= 300 and res.status_code != 404:
             logger.error("Storage delete rejected: status %s", res.status_code)
             raise _storage_error()
+
+    def download(self, path: str) -> bytes:
+        """Fetch an object. Streams the body so an oversized object is refused early."""
+        try:
+            with httpx.stream(
+                "GET", self._url(path), headers=self._headers, timeout=_TIMEOUT_SECONDS
+            ) as res:
+                if res.status_code == 404:
+                    raise StorageObjectNotFound(path)
+                if res.status_code == 400 and _body_says_not_found(res.read()):
+                    # Supabase Storage reports a missing object as 400 with statusCode "404".
+                    raise StorageObjectNotFound(path)
+                if res.status_code >= 300:
+                    logger.error("Storage download rejected: status %s", res.status_code)
+                    raise _storage_error()
+                declared = res.headers.get("content-length")
+                if declared is not None and declared.isdigit() and int(declared) > _MAX_DOWNLOAD:
+                    logger.error("Storage object too large (declared %s bytes)", declared)
+                    raise _storage_error()
+                buf = bytearray()
+                for chunk in res.iter_bytes():
+                    buf += chunk
+                    if len(buf) > _MAX_DOWNLOAD:
+                        logger.error("Storage object exceeded the size limit")
+                        raise _storage_error()
+                return bytes(buf)
+        except httpx.HTTPError:
+            logger.exception("Storage download failed")
+            raise _storage_error() from None
+
+
+def _body_says_not_found(body: bytes) -> bool:
+    try:
+        data = json.loads(body[:4096])
+    except ValueError:
+        return False
+    return isinstance(data, dict) and (
+        str(data.get("statusCode")) == "404" or data.get("error") == "not_found"
+    )
 
 
 @lru_cache

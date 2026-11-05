@@ -77,3 +77,45 @@ def get_document(
         (doc_id, org_id),
     ).fetchone()
     return None if row is None else _to_document(row)
+
+
+def mark_processing(conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID) -> bool:
+    """status 'processing', error cleared. False if no such document in this org."""
+    cur = conn.execute(
+        "update documents set status = 'processing', error = null where id = %s and org_id = %s",
+        (doc_id, org_id),
+    )
+    return cur.rowcount == 1
+
+
+def mark_queued(conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID) -> bool:
+    """status 'queued', error cleared. False if no such document in this org."""
+    cur = conn.execute(
+        "update documents set status = 'queued', error = null where id = %s and org_id = %s",
+        (doc_id, org_id),
+    )
+    return cur.rowcount == 1
+
+
+def mark_failed(
+    conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID, error: str
+) -> bool:
+    """status 'failed' with the error truncated to 500 chars."""
+    cur = conn.execute(
+        "update documents set status = 'failed', error = left(%s, 500) "
+        "where id = %s and org_id = %s",
+        (error, doc_id, org_id),
+    )
+    return cur.rowcount == 1
+
+
+def mark_ready(
+    conn: Connection[dict[str, object]], org_id: UUID, doc_id: UUID, page_count: int | None
+) -> bool:
+    """status 'ready', error cleared; the stored page_count is kept when None is passed."""
+    cur = conn.execute(
+        "update documents set status = 'ready', error = null, "
+        "page_count = coalesce(%s, page_count) where id = %s and org_id = %s",
+        (page_count, doc_id, org_id),
+    )
+    return cur.rowcount == 1

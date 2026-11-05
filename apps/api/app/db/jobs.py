@@ -85,12 +85,15 @@ def claim_next(conn: Connection[dict[str, object]]) -> Job | None:
     return None if row is None else _to_job(row)
 
 
-def complete(conn: Connection[dict[str, object]], org_id: UUID, job_id: UUID) -> bool:
-    """running -> done. False if the job is not running or belongs to another org."""
+def complete(
+    conn: Connection[dict[str, object]], org_id: UUID, job_id: UUID, *, attempts: int
+) -> bool:
+    """running -> done. False if the job is not running, belongs to another org, or was
+    re-claimed since (attempts no longer matches: this worker lost the job)."""
     cur = conn.execute(
         "update jobs set status = 'done', locked_at = null "
-        "where id = %s and org_id = %s and status = 'running'",
-        (job_id, org_id),
+        "where id = %s and org_id = %s and status = 'running' and attempts = %s",
+        (job_id, org_id, attempts),
     )
     return cur.rowcount == 1
 
@@ -100,40 +103,82 @@ def fail(
     org_id: UUID,
     job_id: UUID,
     error: str,
+    *,
+    attempts: int,
     retry_delay_seconds: int = 30,
+    retryable: bool = True,
 ) -> bool:
-    """Record a failure of a running job.
+    """Record a failure of a running job, fenced by the attempt number.
 
-    While attempts < max_attempts the job goes back to 'queued' with run_after pushed
-    out by retry_delay_seconds; otherwise it ends as 'failed'. False if the job is not
-    running or belongs to another org.
+    While retryable and attempts < max_attempts the job goes back to 'queued' with
+    run_after pushed out by retry_delay_seconds; otherwise it ends as 'failed'. The error
+    is truncated to 500 chars. False if the job is not running, belongs to another org,
+    or was re-claimed (attempts mismatch).
     """
     cur = conn.execute(
         "update jobs set "
-        "  status = case when attempts < max_attempts then 'queued' else 'failed' end, "
-        "  run_after = case when attempts < max_attempts "
+        "  status = case when %s::boolean and attempts < max_attempts "
+        "    then 'queued' else 'failed' end, "
+        "  run_after = case when %s::boolean and attempts < max_attempts "
         "    then now() + make_interval(secs => %s::double precision) else run_after end, "
-        "  last_error = %s, "
+        "  last_error = left(%s, 500), "
         "  locked_at = null "
-        "where id = %s and org_id = %s and status = 'running'",
-        (retry_delay_seconds, error, job_id, org_id),
+        "where id = %s and org_id = %s and status = 'running' and attempts = %s",
+        (retryable, retryable, retry_delay_seconds, error, job_id, org_id, attempts),
     )
     return cur.rowcount == 1
 
 
-def requeue_stale(conn: Connection[dict[str, object]], older_than_seconds: int) -> int:
-    """Recover jobs whose worker died: running rows locked longer ago than the cutoff go
-    back to 'queued' (or 'failed' once attempts >= max_attempts). Returns the count.
+def lock_running(
+    conn: Connection[dict[str, object]], org_id: UUID, job_id: UUID, *, attempts: int
+) -> bool:
+    """Row-lock the job if this worker still owns it (running, same attempt).
 
-    Global like claim_next, because it is a worker-side housekeeping sweep over all orgs.
+    True means the row stays locked until the caller's transaction ends, so a stale-job
+    sweep cannot requeue it while the caller writes its results.
     """
-    cur = conn.execute(
+    row = conn.execute(
+        "select 1 from jobs where id = %s and org_id = %s and status = 'running' "
+        "and attempts = %s for update",
+        (job_id, org_id, attempts),
+    ).fetchone()
+    return row is not None
+
+
+@dataclass(frozen=True)
+class StaleJob:
+    id: UUID
+    org_id: UUID
+    type: str
+    payload: dict[str, object]
+    status_after: str  # 'queued' or 'failed'
+
+
+def requeue_stale(conn: Connection[dict[str, object]], older_than_seconds: int) -> list[StaleJob]:
+    """Recover jobs whose worker died: running rows locked longer ago than the cutoff go
+    back to 'queued' (or 'failed' once attempts >= max_attempts). Returns what changed.
+
+    Global on purpose (the CLAUDE.md rule 1 exception, like claim_next): it is a
+    worker-side housekeeping sweep over all orgs. Callers must use each returned org_id
+    for everything they do afterwards.
+    """
+    rows = conn.execute(
         "update jobs set "
         "  status = case when attempts < max_attempts then 'queued' else 'failed' end, "
         "  last_error = coalesce(last_error, 'worker lost: job was running too long'), "
         "  locked_at = null "
         "where status = 'running' "
-        "  and locked_at < now() - make_interval(secs => %s::double precision)",
+        "  and locked_at < now() - make_interval(secs => %s::double precision) "
+        "returning id, org_id, type, payload, status",
         (older_than_seconds,),
-    )
-    return cur.rowcount
+    ).fetchall()
+    return [
+        StaleJob(
+            id=UUID(str(r["id"])),
+            org_id=UUID(str(r["org_id"])),
+            type=str(r["type"]),
+            payload=cast(dict[str, object], r["payload"]),
+            status_after=str(r["status"]),
+        )
+        for r in rows
+    ]

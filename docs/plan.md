@@ -14,11 +14,11 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 
 ## M2 Documents and ingestion
 - [x] 6. Upload endpoint (`POST /documents`, `GET /documents/{id}`) with type, size and page checks, Storage client, `jobs` module with claim via `SKIP LOCKED`; the `jobs` table itself came with the step 3 schema. First ID-based route, so the cross-org 404 test now runs
-- [ ] 7. Ingestion worker: parse, chunk, embed, idempotent re-ingest
+- [x] 7. Ingestion worker: parse, chunk, embed, idempotent re-ingest. Worker thread in the API lifespan, attempts-fenced jobs, fake embeddings only (real Gemini is step 9), `faq` jobs fail until step 8 defines their text
 - [ ] 8. Document list/delete and FAQ entry endpoints
 
 ## M3 Retrieval and ask
-- [ ] 9. `LLMProvider` interface, Gemini and fake providers
+- [ ] 9. Gemini provider and `generate` on the `LLMProvider` interface (the interface, `embed` and the fake provider came with step 7)
 - [ ] 10. Retrieval, "I don't know" gate, `/ask` with server-verified citations
 - [ ] 11. Eval set, injection fixture, threshold tuning
 

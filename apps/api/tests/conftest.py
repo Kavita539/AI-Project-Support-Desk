@@ -17,7 +17,7 @@ from app.db.pool import get_conn
 from app.db.queries.profiles import Profile
 from app.errors import ApiError
 from app.main import app
-from app.storage import get_storage
+from app.storage import StorageObjectNotFound, get_storage
 
 SUPABASE_URL = "https://test.supabase.co"
 ISSUER = f"{SUPABASE_URL}/auth/v1"
@@ -146,6 +146,20 @@ class FakeStorage:
     def delete(self, path: str) -> None:
         self.deleted.append(path)
         self.objects.pop(path, None)
+
+    def download(self, path: str) -> bytes:
+        if path not in self.objects:
+            raise StorageObjectNotFound(path)
+        return self.objects[path][0]
+
+
+@pytest.fixture(autouse=True)
+def no_background_worker(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """A TestClient lifespan must never start the ingestion thread."""
+    monkeypatch.setenv("WORKER_ENABLED", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture

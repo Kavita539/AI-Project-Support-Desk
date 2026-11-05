@@ -15,6 +15,17 @@ class Settings(BaseSettings):
     # Comma-separated browser origins allowed to call the API (the deployed web app).
     cors_origins: str = "http://localhost:5173"
 
+    # Ingestion worker (runs as a thread inside the API process).
+    worker_enabled: bool = True
+    worker_poll_seconds: float = 2.0
+    worker_stale_seconds: int = 600
+    worker_sweep_seconds: int = 60
+    ingest_retry_base_seconds: int = 30
+    embed_batch_size: int = 50
+    chunk_max_chars: int = 2800
+    chunk_overlap_chars: int = 400
+    parse_deadline_seconds: float = 60.0
+
     @property
     def jwt_issuer(self) -> str:
         return f"{self.supabase_url.rstrip('/')}/auth/v1"
