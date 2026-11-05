@@ -108,7 +108,9 @@ Notes:
 
 Base path `/api/v1`. JSON throughout. All endpoints except `/health` need a valid bearer token (401 otherwise). Role checks are dependencies: `require_role('admin')`, `require_role('admin','agent')`, or any authenticated user.
 
-Errors use `{ "error": { "code": "...", "message": "..." } }`. The status codes used are 400, 401, 403, 404, 409 (invalid transition), 413 and 415 (upload limits and types), 429, and 502 (LLM provider failure, retryable).
+Errors use `{ "error": { "code": "...", "message": "..." } }`. The status codes used are 400, 401, 403, 404, 409 (invalid transition, or `already_onboarded`), 413 and 415 (upload limits and types), 422 (invalid request body), 429, 500 (`internal_error`, unexpected), 502 (LLM provider failure, retryable), and 503 (`db_unavailable` or `auth_unavailable`, retryable).
+
+Token verification: the API checks the bearer token against Supabase's public keys (the project's JWKS endpoint, cached), accepting only ES256 and RS256. It requires `exp` and `sub`, `aud` = `authenticated` and `iss` = `<SUPABASE_URL>/auth/v1`, allows 60 seconds of clock skew, and does not check `iat`. No JWT secret is stored. Authentication runs before a database connection is borrowed, and write requests commit before the response is sent.
 
 ### Auth / session
 | Method | Path | Role | Purpose |

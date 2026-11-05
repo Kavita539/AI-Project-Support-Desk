@@ -41,7 +41,7 @@ Each user belongs to exactly one org. The app is multi-tenant (`org_id` on all t
 
 ### F1. Onboarding and login
 1. A user signs up or logs in (email/password, Google optional).
-2. A new user is attached to an org with a role (first user of a new org is Admin; others are invited or assigned).
+2. A new user is attached to an org with a role: either they create an org and become its Admin, or they join an existing org by entering its join code and become a Customer. An Admin promotes staff to Agent or Admin.
 3. The user lands on a role-appropriate home: Admin on Documents, Agent on the ticket queue, Customer on Ask.
 
 ### F2. Document upload (Admin)

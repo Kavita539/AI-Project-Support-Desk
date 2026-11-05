@@ -9,7 +9,7 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 - [x] 2. Migrations: orgs, profiles, documents, chunks (`vector(768)`), tickets, drafts, jobs, indexes
 - [x] 3. RLS policies as backstop (applied to the linked Supabase project)
 - [x] 4. JWT verification, `profiles` lookup, `GET /api/v1/me`
-- [ ] 4b. Onboarding: `POST /onboarding` creates an org (caller is Admin) or joins one by join code (caller is Customer); `GET /org/join-code`; `require_role`. `/me` stays read-only
+- [x] 4b. Onboarding: `POST /onboarding` creates an org (caller is Admin) or joins one by join code (caller is Customer); `GET /org/join-code`; `require_role`. `/me` stays read-only
 - [ ] 5. Tenancy tests (cross-org 404, wrong role 403, no token 401)
 
 ## M2 Documents and ingestion
