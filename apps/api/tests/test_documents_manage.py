@@ -152,6 +152,15 @@ def test_faq_size_is_utf8_bytes_and_name_is_truncated(
     assert doc.size_bytes > len(format_faq(question, "ü"))  # bytes, not characters
 
 
+def test_faq_name_is_a_single_line(
+    client: TestClient, storage: FakeStorage, docs: FakeDocs, two_orgs: TwoOrgs
+) -> None:
+    res = post_faq(
+        client, two_orgs.a.admin.user_id, {"question": "How do\n I   reset?", "answer": "Click."}
+    )
+    assert docs.docs[UUID(res.json()["id"])].name == "How do I reset?"
+
+
 def test_faq_org_comes_from_the_token(
     client: TestClient, storage: FakeStorage, docs: FakeDocs, two_orgs: TwoOrgs
 ) -> None:
@@ -237,9 +246,16 @@ def test_faq_db_failure_deletes_the_stored_object(
 
 
 def test_faq_oversized_body_is_413_before_auth(client: TestClient) -> None:
-    res = client.post(f"{URL}/faq", content=b"x" * (17 * 1024))
+    res = client.post(f"{URL}/faq", content=b"x" * (37 * 1024))
     assert res.status_code == 413
     assert error_code(res) == "body_too_large"
+
+
+def test_faq_without_content_length_is_411(client: TestClient) -> None:
+    # A chunked body has no Content-Length, so the cap could not be applied: refuse it.
+    res = client.post(f"{URL}/faq", content=(b"x" for _ in range(3)))
+    assert res.status_code == 411
+    assert error_code(res) == "length_required"
 
 
 def test_upload_keeps_its_larger_cap(client: TestClient) -> None:

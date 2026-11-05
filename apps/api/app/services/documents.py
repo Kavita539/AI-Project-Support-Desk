@@ -162,10 +162,10 @@ def create_faq(
     doc_id: UUID = uuid4()
     path = f"{profile.org_id}/{doc_id}/faq.txt"
     data = format_faq(question, answer).encode("utf-8")
+    name = " ".join(question.split())[:_NAME_MAX]
     return _store_and_queue(
-        conn, storage, profile, doc_id, question[:_NAME_MAX], "faq", path, data, "text/plain",
-        None,
-    )  # fmt: skip
+        conn, storage, profile, doc_id, name, "faq", path, data, "text/plain", None
+    )
 
 
 def list_documents(
@@ -207,7 +207,9 @@ def delete_document(
     The file goes first: if Storage fails the ApiError propagates and the row is kept, so
     the admin can retry. Known window: if the database step fails after Storage succeeded,
     the row points at a missing file; a retry succeeds because deleting a missing object is
-    treated as success. A job that is already running finishes quietly in the worker.
+    treated as success. A job that is already running finishes quietly if the worker has
+    already downloaded the file; if it has not, the download fails and that job ends 'failed'
+    (harmless: the document is gone and no chunks are written).
     """
     with conn.transaction():
         doc = queries.get_document_for_update(conn, profile.org_id, doc_id)

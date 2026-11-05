@@ -50,7 +50,7 @@ install_error_handlers(app)
 UPLOAD_PATH = "/api/v1/documents"
 MAX_UPLOAD_BODY = MAX_BYTES + 1024 * 1024  # file limit plus multipart overhead
 FAQ_PATH = "/api/v1/documents/faq"
-MAX_FAQ_BODY = 16 * 1024  # 2700 chars at 4 bytes each is about 11 KB
+MAX_FAQ_BODY = 36 * 1024  # 2700 chars; JSON-escaped astral characters take 12 bytes each
 
 
 @app.middleware("http")
@@ -68,7 +68,9 @@ async def limit_upload_body(
     elif request.method == "POST" and request.url.path == FAQ_PATH:
         # A FAQ body is two short strings, so a small cap keeps anonymous bodies cheap.
         raw = request.headers.get("content-length")
-        if raw is not None and raw.isdigit() and int(raw) > MAX_FAQ_BODY:
+        if raw is None or not raw.isdigit():
+            return _error(411, "length_required", "Content-Length is required.")
+        if int(raw) > MAX_FAQ_BODY:
             return _error(413, "body_too_large", "The request is too large.")
     return await call_next(request)
 
