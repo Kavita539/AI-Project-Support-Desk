@@ -11,6 +11,7 @@ SUPPORTED_LLM_PROVIDERS = frozenset({"fake", "gemini"})
 # here would be a cycle because app.llm imports this module. A test asserts they are equal.
 MAX_EMBED_BATCH = 100
 MAX_EMBED_CHARS = 8000
+MAX_TOP_K = 20
 
 _MODEL_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
     chunk_max_chars: int = 2800
     chunk_overlap_chars: int = 400
     parse_deadline_seconds: float = 60.0
+
+    # Retrieval and the "I don't know" gate. Placeholders until the eval set tunes them (step 11).
+    retrieval_top_k: int = 5
+    retrieval_min_score: float = 0.80
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -85,6 +90,10 @@ class Settings(BaseSettings):
                 missing.append("GEMINI_EMBED_MODEL")
             if not _MODEL_NAME.fullmatch(self.gemini_generation_model):
                 missing.append("GEMINI_GENERATION_MODEL")
+        if not 1 <= self.retrieval_top_k <= MAX_TOP_K:
+            missing.append(f"RETRIEVAL_TOP_K (must be 1-{MAX_TOP_K})")
+        if not 0.0 <= self.retrieval_min_score <= 1.0:
+            missing.append("RETRIEVAL_MIN_SCORE (must be 0-1)")
         return missing
 
 

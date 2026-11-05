@@ -57,3 +57,46 @@ def replace_chunks(
             ],
         )
     return len(rows)
+
+
+@dataclass(frozen=True)
+class ChunkHit:
+    id: UUID
+    document_id: UUID
+    document_name: str
+    content: str
+    page: int | None
+    section: str | None
+    score: float  # cosine similarity, 1 is identical
+
+
+def search_chunks(
+    conn: Connection[dict[str, object]], org_id: UUID, query_embedding: list[float], limit: int
+) -> list[ChunkHit]:
+    """The `limit` chunks of this org closest to the query by cosine distance, best first.
+
+    `<=>` is pgvector's cosine distance, so similarity is `1 - distance`. The org filter is
+    on the chunk and again on the document, so a chunk can never be returned for another org.
+    """
+    vector = _vector_literal(query_embedding)
+    rows = conn.execute(
+        "select c.id, c.document_id, d.name as document_name, c.content, c.page, c.section, "
+        "1 - (c.embedding <=> %s::vector) as score "
+        "from chunks c join documents d on d.id = c.document_id and d.org_id = c.org_id "
+        "where c.org_id = %s "
+        "order by c.embedding <=> %s::vector "
+        "limit %s",
+        (vector, org_id, vector, limit),
+    ).fetchall()
+    return [
+        ChunkHit(
+            id=UUID(str(r["id"])),
+            document_id=UUID(str(r["document_id"])),
+            document_name=str(r["document_name"]),
+            content=str(r["content"]),
+            page=None if r["page"] is None else int(str(r["page"])),
+            section=None if r["section"] is None else str(r["section"]),
+            score=float(str(r["score"])),
+        )
+        for r in rows
+    ]
