@@ -48,7 +48,7 @@ docs/                  prd.md, design.md, plan.md
 
 ## Hard rules (from docs/design.md)
 
-1. Tenant isolation: `org_id` and `role` come only from the verified JWT plus the `profiles` row. Never accept `org_id` from request bodies or query strings. Every query in `db/` takes `org_id` explicitly. RLS is a backstop, not the primary control.
+1. Tenant isolation: `org_id` and `role` come only from the verified JWT plus the `profiles` row. Never accept `org_id` from request bodies or query strings. Every query in `db/` takes `org_id` explicitly. RLS is a backstop, not the primary control. Exception: the worker's `claim_next` and `requeue_stale` in `db/jobs.py` are global because the worker does not know which org has work; the claimed job's `org_id` must be used for everything after.
 2. Cross-org IDs return 404, not 403. Wrong role returns 403. Missing/invalid token returns 401.
 3. Fixed pipeline, no agent: classify, retrieve, draft. The LLM has no tools and no write access; its output is schema-validated JSON that the server stores.
 4. Citations are server-verified: drop any cited chunk ID not in the retrieved set. If no valid citations remain, return the "I don't know" response.

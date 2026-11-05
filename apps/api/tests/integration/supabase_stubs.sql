@@ -33,3 +33,13 @@ grant usage on schema public, auth to anon, authenticated, service_role;
 -- Like Supabase, new public tables are readable by the API roles by default; the
 -- hardening migration revokes this for org_join_codes, which is what we test.
 alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+
+-- Minimal stand-in for Supabase Storage, so the bucket migration can run in CI.
+create schema if not exists storage;
+create table if not exists storage.buckets (
+  id text primary key,
+  name text not null unique,
+  public boolean not null default false,
+  file_size_limit bigint,
+  allowed_mime_types text[]
+);
