@@ -18,7 +18,7 @@ Milestones follow `docs/design.md` section 9. Tick a step only when lint, typech
 - [x] 8. Document list/delete and FAQ entry endpoints: `GET /documents` (paged), `POST /documents/faq`, `POST /documents/{id}/reprocess`, `DELETE /documents/{id}`, all admin-only. FAQ text is stored as a Storage object so the existing worker ingests it. `Storage.delete` now tolerates Supabase's 400 not-found body. `GET /documents/{id}/source` and the Documents web page are not part of this step (source belongs with citations, steps 10 to 12; the page with the UI steps)
 
 ## M3 Retrieval and ask
-- [x] 9. Gemini provider and `generate` on the `LLMProvider` interface: `LLMError` family, `embed(kind=)`, `GeminiProvider` over httpx (mocked-transport tests only), `generate_validated`, `data_block` prompt helper, `LLM_PROVIDER` required with boot validation, Retry-After honoured by ingestion. **The live Gemini check has not happened**: REST field names, response shapes, model ids and free-tier limits are unverified, and real vectors have never been stored
+- [x] 9. Gemini provider and `generate` on the `LLMProvider` interface: `LLMError` family, `embed(kind=)`, `GeminiProvider` over httpx (mocked-transport tests only), `generate_validated`, `data_block` prompt helper, `LLM_PROVIDER` required with boot validation, Retry-After honoured by ingestion. **The live Gemini check passed** (embed, query relevance, generate with a schema, bad-key mapping; no database). Free-tier limits, a real 429 and storing real vectors in pgvector are still unverified
 - [ ] 10. Retrieval, "I don't know" gate, `/ask` with server-verified citations
 - [ ] 11. Eval set, injection fixture, threshold tuning
 
