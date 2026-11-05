@@ -61,8 +61,22 @@ docs/                  prd.md, design.md, plan.md
 11. CI and tests never call the real LLM; use the fake provider.
 12. Raw SQL, no ORM. Errors use `{"error": {"code", "message"}}`. API base path is `/api/v1`.
 
+## Workflow for every feature
+
+1. `git fetch`, check the previous branch is merged into `origin/main`, fast-forward local `main`, then branch `feat/<name>` from it. Never add commits to an already-merged branch.
+2. Run lint, typecheck and tests before committing. Commit only; push and apply migrations only when the user asks.
+
+## Docs are part of done
+
+Docs are updated in the same branch as the code, never later. Before calling a step done:
+- `docs/plan.md`: tick the step; add or reword steps if scope changed.
+- `docs/handoff.md`: rewrite "Where we are", the code map, decisions, known gaps and next steps so a fresh session starts from the truth. Verify facts (test count, migrations, stash, environment) instead of copying old text.
+- `docs/design.md` and `docs/prd.md`: update any endpoint, table, status code or flow that changed.
+- Remove statements that are no longer true; do not leave stale text behind.
+
 ## More detail
 
+- `docs/handoff.md`: current state, decisions and next steps. Read first in a new session
 - `docs/prd.md`: product requirements and acceptance criteria (AC-n)
 - `docs/design.md`: architecture, data model, API, pipelines, milestones
 - `docs/plan.md`: step-by-step build plan and progress
