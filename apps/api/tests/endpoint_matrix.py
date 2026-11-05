@@ -46,6 +46,10 @@ ROUTES: list[Route] = [
     # Any signed-in user may call it; a user who already has a profile gets 409 inside.
     Route("POST", "/api/v1/onboarding", body={"org_name": "Matrix Org"}, needs_profile=False),
     Route("GET", "/api/v1/org/join-code", roles=("admin",)),
+    # With no matching chunks the gate answers "I don't know" and the LLM is never called.
+    Route(
+        "POST", "/api/v1/ask", roles=("customer", "admin"), body={"query": "How do refunds work?"}
+    ),
     Route(
         "POST",
         "/api/v1/documents",

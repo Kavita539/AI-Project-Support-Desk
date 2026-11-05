@@ -16,10 +16,11 @@ from app.auth import get_key_resolver
 from app.config import get_settings
 from app.db.jobs import Job
 from app.db.pool import get_conn
+from app.db.queries.chunks import ChunkHit
 from app.db.queries.documents import Document
 from app.db.queries.profiles import Profile
 from app.errors import ApiError
-from app.llm import clear_provider_cache
+from app.llm import FakeProvider, clear_provider_cache
 from app.main import app
 from app.storage import StorageObjectNotFound, get_storage
 
@@ -378,3 +379,79 @@ def client(db: FakeDb, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
+
+
+@dataclass
+class FakeChunk:
+    org_id: UUID
+    hit: ChunkHit
+    embedding: list[float]
+
+
+class FakeAsk:
+    """Stands in for chunk search and question storage. Search is scoped by org_id and ranks by
+    real cosine similarity over the fake provider's vectors, so a chunk whose text equals the
+    query scores 1.0 and unrelated text scores near 0."""
+
+    def __init__(self) -> None:
+        self.chunks: list[FakeChunk] = []
+        self.searches: list[UUID] = []  # org_id of each search
+        self.questions: list[dict[str, Any]] = []
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.services.retrieval.search_chunks", self.search_chunks)
+        monkeypatch.setattr("app.db.queries.questions.insert_question", self.insert_question)
+
+    def seed(
+        self, org_id: UUID, content: str, *, doc_name: str = "guide.md", page: int | None = 1
+    ) -> ChunkHit:
+        hit = ChunkHit(uuid4(), uuid4(), doc_name, content, page, None, 0.0)
+        self.chunks.append(FakeChunk(org_id, hit, FakeProvider().embed([content])[0]))
+        return hit
+
+    def search_chunks(
+        self, _conn: object, org_id: UUID, query_embedding: list[float], limit: int
+    ) -> list[ChunkHit]:
+        self.searches.append(org_id)
+        scored = [
+            (sum(a * b for a, b in zip(c.embedding, query_embedding, strict=True)), c)
+            for c in self.chunks
+            if c.org_id == org_id
+        ]
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [replace(c.hit, score=s) for s, c in scored[:limit]]
+
+    def insert_question(
+        self,
+        _conn: object,
+        org_id: UUID,
+        user_id: UUID,
+        query: str,
+        answer: str | None,
+        status: str,
+        retrieved_chunk_ids: list[UUID],
+        citations: list[dict[str, Any]],
+        top_score: float | None,
+    ) -> UUID:
+        qid = uuid4()
+        self.questions.append(
+            {
+                "id": qid,
+                "org_id": org_id,
+                "user_id": user_id,
+                "query": query,
+                "answer": answer,
+                "status": status,
+                "retrieved_chunk_ids": retrieved_chunk_ids,
+                "citations": citations,
+                "top_score": top_score,
+            }
+        )
+        return qid
+
+
+@pytest.fixture
+def ask_fakes(monkeypatch: pytest.MonkeyPatch) -> FakeAsk:
+    fake = FakeAsk()
+    fake.install(monkeypatch)
+    return fake

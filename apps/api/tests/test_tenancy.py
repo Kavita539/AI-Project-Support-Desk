@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 from .conftest import (
+    FakeAsk,
     FakeDb,
     FakeDocs,
     FakeStorage,
@@ -52,7 +53,9 @@ def _call(client: TestClient, route: Route, token: str | None) -> httpx.Response
 
 
 @pytest.fixture(autouse=True)
-def matrix_fakes(storage: FakeStorage, two_orgs: TwoOrgs, docs: FakeDocs) -> FakeDocs:
+def matrix_fakes(
+    storage: FakeStorage, two_orgs: TwoOrgs, docs: FakeDocs, ask_fakes: FakeAsk
+) -> FakeDocs:
     """Fake storage and document queries, with one ready org A document (DOC_A_ID) seeded.
     The fake lookups are keyed by org_id, so org B gets None for it. Note the matrix runs
     the owner first, so a DELETE row's 404 for org B is weak; test_documents_manage.py has
