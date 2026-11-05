@@ -83,7 +83,7 @@ def search_chunks(
         "select c.id, c.document_id, d.name as document_name, c.content, c.page, c.section, "
         "1 - (c.embedding <=> %s::vector) as score "
         "from chunks c join documents d on d.id = c.document_id and d.org_id = c.org_id "
-        "where c.org_id = %s "
+        "where c.org_id = %s and c.embedding is not null "
         "order by c.embedding <=> %s::vector "
         "limit %s",
         (vector, org_id, vector, limit),

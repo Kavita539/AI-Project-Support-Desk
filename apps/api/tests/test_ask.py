@@ -309,7 +309,14 @@ def test_embedding_failure_is_a_502_and_stores_nothing(
 
 @pytest.mark.parametrize(
     "body",
-    [{}, {"query": ""}, {"query": "   "}, {"query": "a" * 1001}, {"query": "a\x00b"}, {"query": 5}],
+    [
+        {},
+        {"query": ""},
+        {"query": "   "},
+        {"query": "a" * 1001},
+        {"query": "a\x00b"},
+        {"query": 5},
+    ],
 )
 def test_bad_query_is_422(
     client: TestClient, two_orgs: TwoOrgs, ask_fakes: FakeAsk, provider: FakeProvider, body: object
@@ -374,3 +381,19 @@ def test_default_retrieval_settings_are_valid() -> None:
     s = Settings(database_url="x", supabase_url="y", llm_provider="fake")
     assert (s.retrieval_top_k, s.retrieval_min_score) == (5, 0.80)
     assert s.missing_required() == []
+
+
+def test_lone_surrogate_escape_in_the_query_is_422(
+    client: TestClient, two_orgs: TwoOrgs, ask_fakes: FakeAsk, provider: FakeProvider
+) -> None:
+    # The JSON text holds backslash-u-d800, which json.loads turns into an unencodable str.
+    res = client.post(
+        URL,
+        content=b'{"query": "a\ud800b"}',
+        headers={
+            "Authorization": f"Bearer {make_token(two_orgs.a.customer.user_id)}",
+            "Content-Type": "application/json",
+        },
+    )
+    assert res.status_code == 422
+    assert provider.kinds == [] and ask_fakes.questions == []
