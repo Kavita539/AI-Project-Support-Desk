@@ -4,8 +4,7 @@ from typing import Any
 
 import pytest
 
-from app.config import get_settings
-from app.llm import EMBEDDING_DIM, EmbeddingError, FakeProvider, embed_in_batches, get_provider
+from app.llm import EMBEDDING_DIM, EmbeddingError, FakeProvider, embed_in_batches
 from app.llm.base import (
     Embedder,
     EmbedKind,
@@ -199,14 +198,3 @@ def test_fake_satisfies_protocols() -> None:
     assert len(embedder.embed(["x"], kind="query")) == 1
 
 
-def test_get_provider_fake_and_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    try:
-        monkeypatch.setenv("LLM_PROVIDER", "fake")
-        get_settings.cache_clear()
-        assert isinstance(get_provider(), FakeProvider)
-        monkeypatch.setenv("LLM_PROVIDER", "gemini")
-        get_settings.cache_clear()
-        with pytest.raises(RuntimeError, match="'gemini' is not available yet"):
-            get_provider()
-    finally:
-        get_settings.cache_clear()

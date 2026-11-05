@@ -217,7 +217,7 @@ def test_bad_provider_does_not_stop_the_api_booting(monkeypatch: pytest.MonkeyPa
     get_settings.cache_clear()
 
     def broken() -> None:
-        raise RuntimeError("LLM provider 'gemini' is not available yet")
+        raise RuntimeError("LLM provider 'gemini' is not configured")
 
     monkeypatch.setattr("app.main.open_pool", lambda: None)
     monkeypatch.setattr("app.main.close_pool", lambda: None)

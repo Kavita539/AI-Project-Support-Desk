@@ -2,6 +2,8 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+SUPPORTED_LLM_PROVIDERS = frozenset({"fake", "gemini"})
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -11,7 +13,12 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     storage_bucket: str = "documents"
     gemini_api_key: str = ""
-    llm_provider: str = "fake"
+    # No default: "fake" or "gemini" must be chosen explicitly (checked in missing_required).
+    llm_provider: str = ""
+    gemini_embed_model: str = "gemini-embedding-001"
+    gemini_generation_model: str = "gemini-3.5-flash-lite"
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    llm_timeout_seconds: float = 30.0
     # Comma-separated browser origins allowed to call the API (the deployed web app).
     cors_origins: str = "http://localhost:5173"
 
@@ -40,8 +47,19 @@ class Settings(BaseSettings):
 
     def missing_required(self) -> list[str]:
         """Names of settings the API cannot run without."""
-        required = {"DATABASE_URL": self.database_url, "SUPABASE_URL": self.supabase_url}
-        return [name for name, value in required.items() if not value]
+        missing = [
+            name
+            for name, value in (
+                ("DATABASE_URL", self.database_url),
+                ("SUPABASE_URL", self.supabase_url),
+            )
+            if not value
+        ]
+        if self.llm_provider not in SUPPORTED_LLM_PROVIDERS:
+            missing.append("LLM_PROVIDER")
+        elif self.llm_provider == "gemini" and not self.gemini_api_key.strip():
+            missing.append("GEMINI_API_KEY")
+        return missing
 
 
 @lru_cache

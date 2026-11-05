@@ -19,6 +19,7 @@ from app.db.pool import get_conn
 from app.db.queries.documents import Document
 from app.db.queries.profiles import Profile
 from app.errors import ApiError
+from app.llm import clear_provider_cache
 from app.main import app
 from app.storage import StorageObjectNotFound, get_storage
 
@@ -299,9 +300,13 @@ def docs(monkeypatch: pytest.MonkeyPatch) -> FakeDocs:
 def no_background_worker(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """A TestClient lifespan must never start the ingestion thread."""
     monkeypatch.setenv("WORKER_ENABLED", "false")
+    monkeypatch.setenv("LLM_PROVIDER", "fake")  # tests never reach a real LLM
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)  # a developer's real key must not leak in
     get_settings.cache_clear()
+    clear_provider_cache()
     yield
     get_settings.cache_clear()
+    clear_provider_cache()
 
 
 @pytest.fixture
