@@ -12,3 +12,4 @@ test-results/
 *.tsbuildinfo
 
 supabase/.temp/
+.claude/worktrees/
